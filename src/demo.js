@@ -13,7 +13,8 @@ const CARDS = [
   ['Urza\'s Saga', 32], ['Mox Opal', 70], ['Ancient Tomb', 48], ['Fatal Push', 3],
   ['Snapcaster Mage', 9], ['Tarmogoyf', 5], ['Liliana of the Veil', 24], ['Grief', 15],
 ];
-const SETS = [[101, 'Edition A'], [102, 'Edition B'], [103, 'Edition C']];
+const SETS = [[101, 'Demo-Edition Grundset', 'DGS', '2024-06-01', 1], [102, 'Demo-Edition Neuauflage', 'DNA', '2025-02-01', 0.6],
+  [103, 'Demo-Edition Sonderversion', 'DSV', '2023-09-01', 3.5], [104, 'Demo-Edition Erstauflage', 'DEA', '1994-01-01', 12]];
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -32,15 +33,17 @@ export function seedDemo(db, { days = 120, endDay = new Date().toISOString().sli
   const r2 = (v) => Math.round(v * 100) / 100;
   let id = 900000;
 
+  const insSet = db.prepare('INSERT OR REPLACE INTO expansions (id, name, code, release_date) VALUES (?, ?, ?, ?)');
   tx(db, () => {
+    for (const [sid, sname, scode, sdate] of SETS) insSet.run(sid, sname, scode, sdate);
     for (const [name, base] of CARDS) {
-      const printings = 1 + Math.floor(rand() * 3);
+      const printings = 1 + Math.floor(rand() * 4);
       for (let k = 0; k < printings; k++) {
         id++;
         insProduct.run(id, name, SETS[k][0], 'Magic Single (Demo)');
         // Zufallsweg mit Drift, damit es Gewinner und Verlierer gibt
         const drift = (rand() - 0.5) * 0.012;
-        let price = base * (0.7 + rand() * 0.8) * (k === 0 ? 1 : 0.6 + rand() * 0.6);
+        let price = base * (0.7 + rand() * 0.8) * SETS[k][4];
         const series = [];
         for (let d = days - 1; d >= 0; d--) {
           price = Math.max(0.1, price * (1 + drift + (rand() - 0.5) * 0.05));

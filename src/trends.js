@@ -15,17 +15,38 @@ export function guideTrend(p, foil = false) {
 const PRICE_COLS = `p.trend, p.low, p.avg, p.avg1, p.avg7, p.avg30,
   p.trend_foil, p.low_foil, p.avg_foil, p.avg1_foil, p.avg7_foil, p.avg30_foil, p.updated`;
 
-export function searchCards(db, q, limit = 60) {
+/**
+ * Suche nach Kartennamen. Ergebnis ist nach Karte gruppiert, weil es viele Karten in
+ * dutzenden Versionen (Editionen, Promos, Sonderversionen) mit sehr unterschiedlichen Preisen gibt.
+ * Versionen sind nach Preis-Trend aufsteigend sortiert, die normale günstige Version steht also oben.
+ */
+export function searchCards(db, q, maxNames = 30) {
   const term = String(q ?? '').trim();
   if (term.length < 2) return [];
+  const like = `%${escapeLike(term)}%`;
+  const names = db.prepare(`
+    SELECT name FROM products WHERE name LIKE ? ESCAPE '\\'
+    GROUP BY name
+    ORDER BY (name = ? COLLATE NOCASE) DESC, (name LIKE ? ESCAPE '\\') DESC, length(name), name
+    LIMIT ?`).all(like, term, `${escapeLike(term)}%`, maxNames).map((r) => r.name);
+  if (!names.length) return [];
   const rows = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, ${PRICE_COLS},
+    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
       (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
-    FROM products pr LEFT JOIN prices p ON p.id = pr.id
-    WHERE pr.name LIKE ? ESCAPE '\\'
-    ORDER BY (pr.name = ? COLLATE NOCASE) DESC, (pr.name LIKE ? ESCAPE '\\') DESC, p.trend DESC NULLS LAST
-    LIMIT ?`).all(`%${escapeLike(term)}%`, term, `${escapeLike(term)}%`, limit);
-  return rows.map(decorate);
+    FROM products pr LEFT JOIN prices p ON p.id = pr.id LEFT JOIN expansions e ON e.id = pr.expansion_id
+    WHERE pr.name IN (SELECT value FROM json_each(?))
+    ORDER BY p.trend IS NULL, p.trend, e.release_date DESC`).all(JSON.stringify(names));
+  const groups = new Map(names.map((n) => [n, { name: n, versions: [] }]));
+  for (const r of rows) groups.get(r.name)?.versions.push(decorate(r));
+  return [...groups.values()].map((g) => {
+    const prices = g.versions.map((v) => v.trend).filter((v) => v != null);
+    return {
+      ...g,
+      count: g.versions.length,
+      minTrend: prices.length ? Math.min(...prices) : null,
+      maxTrend: prices.length ? Math.max(...prices) : null,
+    };
+  });
 }
 
 function escapeLike(s) {
@@ -38,9 +59,9 @@ function decorate(r) {
 
 export function getCard(db, id) {
   const r = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, pr.date_added, ${PRICE_COLS},
+    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, pr.date_added, ${PRICE_COLS},
       (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
-    FROM products pr LEFT JOIN prices p ON p.id = pr.id WHERE pr.id = ?`).get(Number(id));
+    FROM products pr LEFT JOIN prices p ON p.id = pr.id LEFT JOIN expansions e ON e.id = pr.expansion_id WHERE pr.id = ?`).get(Number(id));
   if (!r) return null;
   const card = decorate(r);
   card.guideTrendFoil = guideTrend(r, true);
@@ -98,7 +119,7 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, day
   if (span?.first && daysBetween(span.first, span.last) >= days) {
     const from = db.prepare('SELECT MAX(day) AS d FROM history WHERE day <= ?').get(shiftDay(span.last, -days)).d;
     const rows = db.prepare(`
-      SELECT pr.id, pr.name, pr.expansion_id, ${PRICE_COLS},
+      SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
         h1.${field} AS now_price, h0.${field} AS then_price,
         (h1.${field} - h0.${field}) / h0.${field} AS change,
         (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
@@ -106,6 +127,7 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, day
       JOIN history h0 ON h0.id = h1.id AND h0.day = ?
       JOIN products pr ON pr.id = h1.id
       LEFT JOIN prices p ON p.id = h1.id
+      LEFT JOIN expansions e ON e.id = pr.expansion_id
       WHERE h1.day = ? AND h0.${field} > 0 AND h1.${field} >= ?
         AND ${direction === 'down' ? 'h1.' + field + ' < h0.' + field : 'h1.' + field + ' > h0.' + field}
       ORDER BY change ${order} LIMIT ?`).all(from, span.last, minP, limitN);
@@ -114,11 +136,11 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, day
 
   const f = foil ? '_foil' : '';
   const rows = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, ${PRICE_COLS},
+    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
       p.avg7${f} AS now_price, p.avg30${f} AS then_price,
       (p.avg7${f} - p.avg30${f}) / p.avg30${f} AS change,
       (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
-    FROM prices p JOIN products pr ON pr.id = p.id
+    FROM prices p JOIN products pr ON pr.id = p.id LEFT JOIN expansions e ON e.id = pr.expansion_id
     WHERE p.avg30${f} > 0 AND p.avg7${f} >= ? AND p.trend${f} >= ?
       -- Trendpreis muss in dieselbe Richtung zeigen, sonst ist es meist nur ein einzelner Ausreißer-Verkauf
       AND ${direction === 'down'
@@ -130,8 +152,8 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, day
 
 export function getWatchlist(db) {
   const rows = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, ${PRICE_COLS}, 1 AS watched, w.added
-    FROM watchlist w JOIN products pr ON pr.id = w.id LEFT JOIN prices p ON p.id = w.id
+    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS}, 1 AS watched, w.added
+    FROM watchlist w JOIN products pr ON pr.id = w.id LEFT JOIN prices p ON p.id = w.id LEFT JOIN expansions e ON e.id = pr.expansion_id
     ORDER BY pr.name`).all();
   return rows.map((r) => {
     const card = decorate(r);

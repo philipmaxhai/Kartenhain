@@ -2,7 +2,7 @@
 
 Preistracker für **Magic: The Gathering** mit Daten von **Cardmarket**. Gedacht fürs Karten-Resellen:
 
-- **Suche** nach Kartennamen (alle Editionen/Drucke)
+- **Suche** nach Kartennamen: pro Karte die **günstigste und die teuerste Version** mit Editionsnamen, wie viel teurer die teuerste ist, und alle Versionen auf einen Blick
 - **Graphen** zum Preisverlauf jeder Karte (Trendpreis und Ab-Preis, normal und Foil, 30 Tage bis alles)
 - **Trends**: Top 100 der am stärksten gestiegenen ▲ und gefallenen ▼ Karten (Ø-Preis vorher → jetzt, in Prozent), über 7, 30 oder 90 Tage, mit Mindestpreis-Filter
 - **5 günstigste Angebote** einer Karte mit **Verkäuferland** (Flagge + Name), Filter für Zustand und Sprache
@@ -43,7 +43,8 @@ Solange der Server läuft, holt er sich einmal am Tag die neuen Preise.
 | Suche, aktuelle Preise (Trend, Ab-Preis, Ø 1/7/30 Tage) | Öffentlicher Cardmarket-Preisguide (`price_guide_1.json`) und Produktkatalog, täglich aktualisiert | Nein |
 | Preisverlauf / Graphen | Das Tool speichert jeden Tag eine Momentaufnahme in `data/kartenhain.sqlite` | Nein |
 | 5 günstigste Angebote mit Land | Offizielle Cardmarket-API v2.0 (`/articles/{idProduct}`) | **Ja** |
-| Kartenbilder, Editionsname | Scryfall (über die Cardmarket-ID) | Nein |
+| Editionsnamen (Cardmarket-Editions-ID → Name) | MTGJSON `SetList.json` | Nein |
+| Kartenbilder | Scryfall (über die Cardmarket-ID) | Nein |
 
 **Wichtig zum Verlauf:** Cardmarket bietet keine langen Preis-Historien zum Download an. Der Graph füllt sich
 deshalb ab dem ersten Start Tag für Tag. Bis genug Verlauf da ist, berechnet die Trend-Seite die Gewinner und

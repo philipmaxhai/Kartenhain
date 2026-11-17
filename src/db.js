@@ -36,6 +36,14 @@ export function openDb(file) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS idx_history_day ON history(day);
 
+    -- Editionsnamen (Cardmarket-Editions-ID -> Name), aus MTGJSON
+    CREATE TABLE IF NOT EXISTS expansions (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      code TEXT,
+      release_date TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS watchlist (
       id INTEGER PRIMARY KEY,
       added TEXT NOT NULL
