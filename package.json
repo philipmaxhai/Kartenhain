@@ -1,0 +1,14 @@
+{
+  "name": "kartenhain",
+  "version": "1.0.0",
+  "description": "Preistracker für Magic: The Gathering mit Cardmarket-Daten: Trends, Graphen, Suche, günstigste Angebote mit Verkäuferland.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "demo": "node --disable-warning=ExperimentalWarning src/server.js --demo",
+    "update": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/update.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  }
+}
