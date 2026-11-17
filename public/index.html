@@ -16,7 +16,7 @@
   </header>
 
   <div id="demo-banner" class="banner" hidden>
-    Demo-Modus: Alle Preise und Angebote sind erfunden. Für echte Cardmarket-Daten <code>npm start</code> verwenden.
+    Demo-Modus: Alle Preise und Angebote sind erfunden. Für echte Cardmarket-Preise <b>Start.bat</b> verwenden (nicht „Demo starten“).
   </div>
 
   <nav class="tabs" role="tablist">
@@ -37,8 +37,8 @@
     <section id="tab-movers" class="tab" hidden>
       <div class="filters">
         <div class="seg" id="mv-dir">
-          <button data-v="up" aria-pressed="true">▲ Gewinner</button>
-          <button data-v="down" aria-pressed="false">▼ Verlierer</button>
+          <button data-v="up" aria-pressed="true">▲ Gestiegen</button>
+          <button data-v="down" aria-pressed="false">▼ Gefallen</button>
         </div>
         <label>Zeitraum
           <select id="mv-days">
@@ -54,6 +54,8 @@
             <option value="5">ab 5 €</option>
             <option value="10">ab 10 €</option>
             <option value="25">ab 25 €</option>
+            <option value="50">ab 50 €</option>
+            <option value="100">ab 100 €</option>
           </select>
         </label>
         <label class="check"><input type="checkbox" id="mv-foil"> Foil</label>

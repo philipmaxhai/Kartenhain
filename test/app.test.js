@@ -21,7 +21,7 @@ const guide = (day, ring, bolt) => ({
   version: 1,
   createdAt: `${day}T02:00:00+0100`,
   priceGuides: [
-    { idProduct: 1, avg: 2, low: 1.1, trend: bolt, avg1: 2, avg7: 2.5, avg30: 2, 'trend-foil': 5, 'avg7-foil': 4, 'avg30-foil': 5 },
+    { idProduct: 1, avg: 2, low: 1.1, trend: bolt, avg1: 2, avg7: 2.5, avg30: 2, 'trend-foil': 4.5, 'avg7-foil': 4, 'avg30-foil': 5 },
     { idProduct: 2, avg: 1, low: 0.5, trend: 1, avg1: 1, avg7: 1, avg30: 1.25 },
     { idProduct: 3, avg: 60, low: 50, trend: ring, avg1: 60, avg7: 55, avg30: 70 },
     { idProduct: 4, avg: 0.05, low: 0.02, trend: 0.04, avg1: 0.05, avg7: 0.06, avg30: 0.03 },
@@ -63,7 +63,7 @@ test('Suche findet Namen, exakte Treffer zuerst', () => {
 
 test('Trends aus dem Preisguide, solange kein eigener Verlauf da ist', () => {
   const db = freshDb();
-  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
   const up = topMovers(db, { direction: 'up', minPrice: 1 });
   assert.equal(up.source, 'guide');
   assert.deepEqual(up.rows.map((r) => r.id), [1]); // 2,5 vs 2,0 = +25 %
@@ -72,6 +72,13 @@ test('Trends aus dem Preisguide, solange kein eigener Verlauf da ist', () => {
   assert.deepEqual(down.rows.map((r) => r.id), [3, 2]); // −21 %, −20 %
   const foil = topMovers(db, { direction: 'down', minPrice: 1, foil: true });
   assert.deepEqual(foil.rows.map((r) => r.id), [1]);
+});
+
+test('Ausreißer ohne passenden Trendpreis werden ignoriert', () => {
+  const db = freshDb();
+  // Karte 1: Ø 7 Tage über Ø 30 Tage, aber Trendpreis (2,0) nicht -> kein echter Anstieg
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  assert.deepEqual(topMovers(db, { direction: 'up', minPrice: 1 }).rows, []);
 });
 
 test('Trends aus eigenem Verlauf, sobald genug Tage gespeichert sind', () => {

@@ -90,6 +90,11 @@ main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 60px; }
 .row .price { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .row .price small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
 .row .chg { text-align: right; min-width: 72px; font-variant-numeric: tabular-nums; }
+.row.mover { grid-template-columns: 40px 1fr auto 32px; }
+.row .rank { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.row .sub b { color: var(--text-2); font-weight: 600; }
+.chg.big { font-size: 17px; font-weight: 650; }
+.err { color: var(--bad); }
 .star { border: 0; background: none; font-size: 20px; cursor: pointer; color: var(--muted); padding: 0; }
 .star.on { color: #e0a100; }
 .empty { color: var(--muted); padding: 30px 0; text-align: center; }
@@ -144,6 +149,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .row img, .row .ph { width: 32px; height: 45px; }
   .row .chg { min-width: 0; font-size: 13px; }
   .row .price small { display: none; }
+  .row.mover { grid-template-columns: 32px 1fr auto 22px; }
+  .chg.big { font-size: 15px; }
   .d-head img { width: 96px; }
   .chart svg { height: 220px; }
 }

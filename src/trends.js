@@ -88,11 +88,11 @@ function daysBetween(a, b) {
  * Wenn die eigene Historie lang genug ist, wird sie für den Zeitraum verwendet,
  * sonst der Cardmarket-Vergleich "7-Tage-Schnitt gegen 30-Tage-Schnitt".
  */
-export function topMovers(db, { direction = 'up', minPrice = 2, limit = 25, days = 7, foil = false } = {}) {
+export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, days = 7, foil = false } = {}) {
   const order = direction === 'down' ? 'ASC' : 'DESC';
   const span = db.prepare('SELECT MIN(day) AS first, MAX(day) AS last FROM history').get();
   const field = foil ? 'trend_foil' : 'trend';
-  const limitN = Math.min(Math.max(Number(limit) || 25, 1), 200);
+  const limitN = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const minP = Number(minPrice) || 0;
 
   if (span?.first && daysBetween(span.first, span.last) >= days) {
@@ -120,7 +120,10 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 25, days
       (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
     FROM prices p JOIN products pr ON pr.id = p.id
     WHERE p.avg30${f} > 0 AND p.avg7${f} >= ? AND p.trend${f} >= ?
-      AND ${direction === 'down' ? `p.avg7${f} < p.avg30${f}` : `p.avg7${f} > p.avg30${f}`}
+      -- Trendpreis muss in dieselbe Richtung zeigen, sonst ist es meist nur ein einzelner Ausreißer-Verkauf
+      AND ${direction === 'down'
+        ? `p.avg7${f} < p.avg30${f} AND p.trend${f} < p.avg30${f}`
+        : `p.avg7${f} > p.avg30${f} AND p.trend${f} > p.avg30${f}`}
     ORDER BY change ${order} LIMIT ?`).all(minP, minP, limitN);
   return { source: 'guide', days: null, rows: rows.map(decorate) };
 }

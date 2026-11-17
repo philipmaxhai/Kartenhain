@@ -4,7 +4,7 @@ Preistracker für **Magic: The Gathering** mit Daten von **Cardmarket**. Gedacht
 
 - **Suche** nach Kartennamen (alle Editionen/Drucke)
 - **Graphen** zum Preisverlauf jeder Karte (Trendpreis und Ab-Preis, normal und Foil, 30 Tage bis alles)
-- **Trends**: größte Gewinner ▲ und Verlierer ▼ über 7, 30 oder 90 Tage, mit Mindestpreis-Filter
+- **Trends**: Top 100 der am stärksten gestiegenen ▲ und gefallenen ▼ Karten (Ø-Preis vorher → jetzt, in Prozent), über 7, 30 oder 90 Tage, mit Mindestpreis-Filter
 - **5 günstigste Angebote** einer Karte mit **Verkäuferland** (Flagge + Name), Filter für Zustand und Sprache
 - **Merkliste** für Karten, die du beobachten willst
 
