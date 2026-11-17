@@ -51,7 +51,22 @@ export function openDb(file) {
 
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
   `);
+  // Spalten, die in späteren Versionen dazugekommen sind (bestehende Datenbanken nachrüsten)
+  addColumns(db, 'watchlist', {
+    qty: 'INTEGER NOT NULL DEFAULT 0',
+    buy_price: 'REAL',
+    alert_below: 'REAL',
+    alert_above: 'REAL',
+    foil: 'INTEGER NOT NULL DEFAULT 0',
+  });
   return db;
+}
+
+function addColumns(db, table, cols) {
+  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  for (const [name, type] of Object.entries(cols)) {
+    if (!have.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  }
 }
 
 export function getMeta(db, key) {

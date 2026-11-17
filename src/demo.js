@@ -54,11 +54,21 @@ export function seedDemo(db, { days = 120, endDay = new Date().toISOString().sli
         }
         const avg = (n) => r2(series.slice(-n).reduce((a, s) => a + s.trend, 0) / n);
         const last = series[series.length - 1].trend;
-        insPrice.run(id, avg(3), r2(last * 0.82), last, avg(1), avg(7), avg(30),
+        insPrice.run(id, avg(3), r2(last * (0.45 + rand() * 0.45)), last, avg(1), avg(7), avg(30),
           r2(last * 2.3), r2(last * 1.9), r2(last * 2.2), r2(avg(1) * 2.2), r2(avg(7) * 2.2), r2(avg(30) * 2.2),
           new Date().toISOString());
       }
     }
+  });
+  // Ein paar Karten in "Meine Karten" mit Menge, Einkaufspreis und einem Alarm
+  const ins = db.prepare(`INSERT OR REPLACE INTO watchlist (id, added, qty, buy_price, alert_below, alert_above, foil)
+    VALUES (?, ?, ?, ?, ?, ?, 0)`);
+  const now = new Date().toISOString();
+  const price = (pid) => db.prepare('SELECT trend FROM prices WHERE id = ?').get(pid)?.trend ?? 1;
+  [[900001, 4, 0.9], [900003, 1, 0.75], [900010, 2, 1.15], [900020, 1, null]].forEach(([pid, qty, f], i) => {
+    if (pid > id) return;
+    const p = price(pid);
+    ins.run(pid, now, qty, f == null ? null : Math.round(p * f * 100) / 100, null, i === 1 ? Math.round(p * 0.9 * 100) / 100 : null);
   });
   setMeta(db, 'demo', '1');
   setMeta(db, 'lastUpdate', new Date().toISOString());

@@ -65,6 +65,7 @@ export function getCard(db, id) {
   if (!r) return null;
   const card = decorate(r);
   card.guideTrendFoil = guideTrend(r, true);
+  card.own = db.prepare('SELECT qty, buy_price, alert_below, alert_above, foil FROM watchlist WHERE id = ?').get(Number(id)) ?? null;
   card.history = getHistory(db, id);
   card.historyChange = {
     d7: historyChange(card.history, 7),
@@ -108,14 +109,29 @@ function daysBetween(a, b) {
  * Größte Gewinner/Verlierer.
  * Wenn die eigene Historie lang genug ist, wird sie für den Zeitraum verwendet,
  * sonst der Cardmarket-Vergleich "7-Tage-Schnitt gegen 30-Tage-Schnitt".
+ * Filter: minPrice/maxPrice (€), setId (Cardmarket-Editions-ID), q (Name enthält), sort ('pct' | 'abs').
  */
-export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, days = 7, foil = false } = {}) {
-  const order = direction === 'down' ? 'ASC' : 'DESC';
+export function topMovers(db, {
+  direction = 'up', minPrice = 2, maxPrice = null, limit = 100, days = 7, foil = false,
+  setId = null, q = '', sort = 'pct',
+} = {}) {
+  const down = direction === 'down';
+  const order = down ? 'ASC' : 'DESC';
   const span = db.prepare('SELECT MIN(day) AS first, MAX(day) AS last FROM history').get();
   const field = foil ? 'trend_foil' : 'trend';
   const limitN = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const minP = Number(minPrice) || 0;
+  const maxP = Number(maxPrice) > 0 ? Number(maxPrice) : 1e12;
+  const sortExpr = sort === 'abs' ? '(now_price - then_price)' : 'change';
 
+  const extra = [];
+  const extraArgs = [];
+  if (Number(setId) > 0) { extra.push('pr.expansion_id = ?'); extraArgs.push(Number(setId)); }
+  const term = String(q ?? '').trim();
+  if (term) { extra.push("pr.name LIKE ? ESCAPE '\\'"); extraArgs.push(`%${escapeLike(term)}%`); }
+  const extraSql = extra.length ? ' AND ' + extra.join(' AND ') : '';
+
+  let result;
   if (span?.first && daysBetween(span.first, span.last) >= days) {
     const from = db.prepare('SELECT MAX(day) AS d FROM history WHERE day <= ?').get(shiftDay(span.last, -days)).d;
     const rows = db.prepare(`
@@ -128,40 +144,83 @@ export function topMovers(db, { direction = 'up', minPrice = 2, limit = 100, day
       JOIN products pr ON pr.id = h1.id
       LEFT JOIN prices p ON p.id = h1.id
       LEFT JOIN expansions e ON e.id = pr.expansion_id
-      WHERE h1.day = ? AND h0.${field} > 0 AND h1.${field} >= ?
-        AND ${direction === 'down' ? 'h1.' + field + ' < h0.' + field : 'h1.' + field + ' > h0.' + field}
-      ORDER BY change ${order} LIMIT ?`).all(from, span.last, minP, limitN);
-    return { source: 'history', days, from, to: span.last, rows: rows.map(decorate) };
+      WHERE h1.day = ? AND h0.${field} > 0 AND h1.${field} >= ? AND h1.${field} <= ?
+        AND h1.${field} ${down ? '<' : '>'} h0.${field} ${extraSql}
+      ORDER BY ${sortExpr} ${order} LIMIT ?`).all(from, span.last, minP, maxP, ...extraArgs, limitN);
+    result = { source: 'history', days, from, to: span.last, rows: rows.map(decorate) };
+  } else {
+    const f = foil ? '_foil' : '';
+    const rows = db.prepare(`
+      SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
+        p.avg7${f} AS now_price, p.avg30${f} AS then_price,
+        (p.avg7${f} - p.avg30${f}) / p.avg30${f} AS change,
+        (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
+      FROM prices p JOIN products pr ON pr.id = p.id LEFT JOIN expansions e ON e.id = pr.expansion_id
+      WHERE p.avg30${f} > 0 AND p.avg7${f} >= ? AND p.trend${f} >= ? AND p.trend${f} <= ?
+        -- Trendpreis muss in dieselbe Richtung zeigen, sonst ist es meist nur ein einzelner Ausreißer-Verkauf
+        AND p.avg7${f} ${down ? '<' : '>'} p.avg30${f} AND p.trend${f} ${down ? '<' : '>'} p.avg30${f}
+        ${extraSql}
+      ORDER BY ${sortExpr} ${order} LIMIT ?`).all(minP, minP, maxP, ...extraArgs, limitN);
+    result = { source: 'guide', days: null, rows: rows.map(decorate) };
   }
+  for (const r of result.rows) r.spark = sparkFor(db, r, foil);
+  return result;
+}
 
+/**
+ * Mini-Verlauf für Listen: aus der eigenen Historie (letzte 30 Tage), sonst die
+ * Cardmarket-Durchschnitte in zeitlicher Reihenfolge (Ø 30 Tage → Ø 7 Tage → Ø 1 Tag → Trend).
+ */
+export function sparkFor(db, r, foil = false) {
+  const field = foil ? 'trend_foil' : 'trend';
+  const hist = db.prepare(`SELECT ${field} AS v FROM history WHERE id = ? AND ${field} IS NOT NULL
+    ORDER BY day DESC LIMIT 30`).all(r.id).map((h) => h.v).reverse();
+  if (hist.length >= 5) return { kind: 'history', values: hist };
   const f = foil ? '_foil' : '';
-  const rows = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
-      p.avg7${f} AS now_price, p.avg30${f} AS then_price,
-      (p.avg7${f} - p.avg30${f}) / p.avg30${f} AS change,
-      (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
-    FROM prices p JOIN products pr ON pr.id = p.id LEFT JOIN expansions e ON e.id = pr.expansion_id
-    WHERE p.avg30${f} > 0 AND p.avg7${f} >= ? AND p.trend${f} >= ?
-      -- Trendpreis muss in dieselbe Richtung zeigen, sonst ist es meist nur ein einzelner Ausreißer-Verkauf
-      AND ${direction === 'down'
-        ? `p.avg7${f} < p.avg30${f} AND p.trend${f} < p.avg30${f}`
-        : `p.avg7${f} > p.avg30${f} AND p.trend${f} > p.avg30${f}`}
-    ORDER BY change ${order} LIMIT ?`).all(minP, minP, limitN);
-  return { source: 'guide', days: null, rows: rows.map(decorate) };
+  const vals = [r['avg30' + f], r['avg7' + f], r['avg1' + f], r['trend' + f]];
+  return vals.every((v) => v != null) ? { kind: 'guide', values: vals } : null;
 }
 
 export function getWatchlist(db) {
   const rows = db.prepare(`
-    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS}, 1 AS watched, w.added
+    SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
+      1 AS watched, w.added, w.qty, w.buy_price, w.alert_below, w.alert_above, w.foil AS own_foil
     FROM watchlist w JOIN products pr ON pr.id = w.id LEFT JOIN prices p ON p.id = w.id LEFT JOIN expansions e ON e.id = pr.expansion_id
     ORDER BY pr.name`).all();
   return rows.map((r) => {
     const card = decorate(r);
+    const foil = Boolean(r.own_foil);
     const hist = getHistory(db, r.id, 120);
-    card.historyChange = { d7: historyChange(hist, 7), d30: historyChange(hist, 30) };
-    card.spark = hist.slice(-60).map((h) => h.trend);
+    card.foil = foil;
+    card.historyChange = { d7: historyChange(hist, 7, foil ? 'trend_foil' : 'trend'), d30: historyChange(hist, 30, foil ? 'trend_foil' : 'trend') };
+    card.spark = sparkFor(db, r, foil);
+    card.value_each = foil ? r.trend_foil : r.trend;
+    const qty = r.qty || 0;
+    card.value = card.value_each != null ? card.value_each * qty : null;
+    card.cost = r.buy_price != null ? r.buy_price * qty : null;
+    card.profit = card.value != null && card.cost != null ? card.value - card.cost : null;
+    card.alert = card.value_each == null ? null
+      : r.alert_below != null && card.value_each <= r.alert_below ? 'below'
+        : r.alert_above != null && card.value_each >= r.alert_above ? 'above' : null;
     return card;
   });
+}
+
+/** Bestand/Alarm einer gemerkten Karte setzen. Leere Werte löschen das Feld. */
+export function updateWatch(db, id, data = {}) {
+  setWatched(db, id, true);
+  const numOrNull = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? null : Math.max(0, Number(v)));
+  const cur = db.prepare('SELECT * FROM watchlist WHERE id = ?').get(Number(id));
+  const next = {
+    qty: 'qty' in data ? Math.round(numOrNull(data.qty) ?? 0) : cur.qty,
+    buy_price: 'buy_price' in data ? numOrNull(data.buy_price) : cur.buy_price,
+    alert_below: 'alert_below' in data ? numOrNull(data.alert_below) : cur.alert_below,
+    alert_above: 'alert_above' in data ? numOrNull(data.alert_above) : cur.alert_above,
+    foil: 'foil' in data ? (data.foil ? 1 : 0) : cur.foil,
+  };
+  db.prepare('UPDATE watchlist SET qty = ?, buy_price = ?, alert_below = ?, alert_above = ?, foil = ? WHERE id = ?')
+    .run(next.qty, next.buy_price, next.alert_below, next.alert_above, next.foil, Number(id));
+  return next;
 }
 
 export function setWatched(db, id, on) {

@@ -212,3 +212,92 @@ test('Demo-Daten erzeugen Verlauf und Angebote', async () => {
     assert.ok(o.offers[0].price <= o.offers[4].price);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Übersicht, Schnäppchen, Bestand, Filter
+// ---------------------------------------------------------------------------
+import { dashboard, deals, portfolio, histogram, listSets } from '../src/market.js';
+import { updateWatch } from '../src/trends.js';
+
+test('Trends filtern nach Preisbereich, Edition, Name und sortieren nach €', () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
+  const down = (o) => topMovers(db, { direction: 'down', minPrice: 1, ...o }).rows.map((r) => r.id);
+  assert.deepEqual(down({}), [3, 2]);
+  assert.deepEqual(down({ maxPrice: 10 }), [2]);
+  assert.deepEqual(down({ setId: 12 }), [3]);
+  assert.deepEqual(down({ q: 'bolt' }), [2]);
+  // nach € statt %: One Ring fällt um 15 €, Bolt nur um 0,25 €
+  assert.deepEqual(down({ sort: 'abs' }), [3, 2]);
+  const up = topMovers(db, { direction: 'up', minPrice: 1 });
+  assert.deepEqual(up.rows[0].spark, { kind: 'guide', values: [2, 2.5, 2, 2.4] });
+});
+
+test('Übersicht: Marktstimmung und Verteilung', () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
+  const d = dashboard(db, { minPrice: 1 });
+  assert.equal(d.cards, 3);
+  assert.equal(d.up, 1);
+  assert.equal(d.down, 2);
+  assert.equal(d.histogram.reduce((a, b) => a + b.count, 0), 3);
+  assert.equal(d.gainers.rows[0].id, 1);
+  assert.equal(d.mostValuable[0].id, 3);
+  const h = histogram([-0.9, 0, 0.049, 0.9]);
+  assert.equal(h.length, 20);
+  assert.equal(h[0].count, 1);
+  assert.equal(h[10].count, 2);
+  assert.equal(h[19].count, 1);
+});
+
+test('Schnäppchen: günstigstes Angebot weit unter Preis-Trend', () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
+  // One Ring: ab 50 € bei Trend 60 € -> nur 17 % günstiger; Bolt 1: 1,10 bei 2,40 €; Bolt 2: 0,50 bei 1 €
+  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.7 }).map((r) => r.id), [1, 2]);
+  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.9 }).map((r) => r.id), [3, 1, 2]); // nach € sortiert
+  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.9, sort: 'pct' }).map((r) => r.id), [1, 2, 3]);
+});
+
+test('Meine Karten: Menge, Einkaufspreis, Gewinn, Alarme, Wertverlauf', () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2), day: '2026-11-01' });
+  updateWatch(db, 3, { qty: 2, buy_price: 50, alert_above: 55 });
+  updateWatch(db, 1, { qty: 4, alert_below: '' });
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-02', 66, 2), day: '2026-11-02' });
+  const p = portfolio(db);
+  assert.equal(p.owned, 2);
+  assert.equal(p.copies, 6);
+  assert.equal(p.value, 2 * 66 + 4 * 2);
+  assert.equal(p.cost, 100);
+  assert.equal(p.profit, 2 * 66 - 100); // nur Karten mit Einkaufspreis zählen zum Gewinn
+  assert.deepEqual(p.alerts.map((a) => [a.id, a.alert]), [[3, 'above']]);
+  assert.deepEqual(p.history.map((h) => h.value), [2 * 60 + 4 * 2, 2 * 66 + 4 * 2]);
+  // Feld leeren
+  updateWatch(db, 3, { alert_above: '' });
+  assert.equal(portfolio(db).alerts.length, 0);
+});
+
+test('Editionsliste für Filter', () => {
+  const db = freshDb();
+  importSets(db, { data: [{ code: 'M11', name: 'Magic 2011', mcmId: 10, releaseDate: '2010-07-16' }] });
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  assert.deepEqual(listSets(db).map((s) => [s.code, s.cards]), [['M11', 1]]);
+});
+
+test('HTTP-API: Übersicht, Schnäppchen, Bestand speichern', async () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
+  await withServer(createApp({ db, env: {} }), async (base) => {
+    assert.equal((await fetch(base + '/api/dashboard?minPrice=1').then((r) => r.json())).cards, 3);
+    assert.ok(Array.isArray(await fetch(base + '/api/deals').then((r) => r.json())));
+    const put = await fetch(base + '/api/watchlist/3', { method: 'PUT', body: JSON.stringify({ qty: 3, buy_price: 40 }) });
+    assert.equal(put.status, 200);
+    const w = await fetch(base + '/api/watchlist').then((r) => r.json());
+    assert.equal(w[0].qty, 3);
+    assert.equal(w[0].profit, 3 * 60 - 120);
+    assert.equal((await fetch(base + '/api/watchlist/3', { method: 'PUT', body: '{kaputt' })).status, 400);
+    const mv = await fetch(base + '/api/movers?direction=down&minPrice=1&maxPrice=10').then((r) => r.json());
+    assert.deepEqual(mv.rows.map((r) => r.id), [2]);
+  });
+});

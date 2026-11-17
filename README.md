@@ -2,11 +2,15 @@
 
 Preistracker für **Magic: The Gathering** mit Daten von **Cardmarket**. Gedacht fürs Karten-Resellen:
 
+- **Übersicht**: Marktstimmung auf einen Blick (wie viele Karten steigen/fallen), Verteilung der Preisänderungen,
+  stärkste Anstiege und Rückgänge sowie die teuersten Karten mit Kartenbild und Mini-Verlauf
 - **Suche** nach Kartennamen: pro Karte die **günstigste und die teuerste Version** mit Editionsnamen, wie viel teurer die teuerste ist, und alle Versionen auf einen Blick
-- **Graphen** zum Preisverlauf jeder Karte (Trendpreis und Ab-Preis, normal und Foil, 30 Tage bis alles)
-- **Trends**: Top 100 der am stärksten gestiegenen ▲ und gefallenen ▼ Karten (Ø-Preis vorher → jetzt, in Prozent), über 7, 30 oder 90 Tage, mit Mindestpreis-Filter
+- **Trends**: Top 100 der am stärksten gestiegenen ▲ und gefallenen ▼ Karten (Ø-Preis vorher → jetzt, in Prozent oder Euro),
+  über 7, 30 oder 90 Tage, filterbar nach Preisbereich, Edition und Name, als Liste oder **Kacheln mit Kartenbildern**, Export als CSV (Excel)
+- **Schnäppchen**: Karten, deren günstigstes Angebot weit unter dem Preis-Trend liegt
+- **Meine Karten**: Menge und Einkaufspreis eintragen → Gesamtwert, Gewinn/Verlust und Wertverlauf; **Preisalarme** (unter/über einem Preis)
+- **Graphen** zum Preisverlauf jeder Karte (Preis-Trend und günstigstes Angebot, normal und Foil, mit deinem Einkaufspreis als Linie)
 - **5 günstigste Angebote** einer Karte mit **Verkäuferland** (Flagge + Name), Filter für Zustand und Sprache
-- **Merkliste** für Karten, die du beobachten willst
 
 ## Starten unter Windows (ohne Vorkenntnisse)
 

@@ -1,4 +1,6 @@
 // Kartenhain Preistracker – Oberfläche (ohne Frameworks)
+import { sparkline, histogramSvg, areaChart } from './charts.js';
+
 const $ = (s, el = document) => el.querySelector(s);
 const eur = (v) => (v == null ? '–' : v.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }));
 const pct = (v) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(v * 100).toLocaleString('de-DE', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} %`);
@@ -14,7 +16,19 @@ async function api(path, opts) {
   return body;
 }
 
-const state = { status: null, card: null, foil: false, range: 90, scry: new Map() };
+const state = { status: null, card: null, foil: false, range: 90, scry: new Map(), view: {}, lists: {} };
+
+// Tooltip, den alle Diagramme teilen
+const tooltip = {
+  show(ev, html) {
+    const tip = $('#tooltip');
+    tip.innerHTML = html;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8)}px`;
+    tip.style.top = `${ev.clientY + 14}px`;
+  },
+  hide() { $('#tooltip').hidden = true; },
+};
 
 // ---------------------------------------------------------------- Status
 async function loadStatus() {
@@ -38,6 +52,7 @@ async function loadStatus() {
   } else if (state.wasUpdating) {
     // Update gerade fertig: aktuelle Ansicht mit den neuen Preisen neu laden
     state.wasUpdating = false;
+    loadSets().catch(() => {});
     const tab = document.querySelector('.tabs [aria-selected="true"]')?.dataset.tab;
     if (tab) showTab(tab);
   }
@@ -62,9 +77,130 @@ document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('cli
 function showTab(tab) {
   document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   document.querySelectorAll('.tab').forEach((s) => { s.hidden = s.id !== `tab-${tab}`; });
+  if (tab === 'home') loadHome();
   if (tab === 'movers') loadMovers();
+  if (tab === 'deals') loadDeals();
   if (tab === 'watch') loadWatchlist();
   try { localStorage.setItem('kh-tab', tab); } catch {}
+}
+
+// Liste/Kacheln umschalten
+document.querySelectorAll('.view-toggle').forEach((seg) => seg.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  state.view[seg.dataset.for] = b.dataset.v;
+  try { localStorage.setItem(`kh-view-${seg.dataset.for}`, b.dataset.v); } catch {}
+  if (seg.dataset.for === 'movers') renderMovers();
+}));
+
+/** Editionslisten für die Filter einmal laden. */
+async function loadSets() {
+  const sets = await api('/api/sets');
+  const opts = sets.map((s) => `<option value="${s.id}">${esc(s.name)}${s.code ? ` (${esc(s.code)})` : ''}${s.release_date ? ` · ${s.release_date.slice(0, 4)}` : ''}</option>`).join('');
+  document.querySelectorAll('.set-select').forEach((sel) => {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">alle Editionen</option>' + opts;
+    sel.value = cur;
+  });
+}
+
+/** CSV-Datei (Excel-tauglich: Semikolon, Komma als Dezimaltrenner) herunterladen. */
+function downloadCsv(name, header, rows) {
+  const cell = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'number') return String(Math.round(v * 10000) / 10000).replace('.', ',');
+    const t = String(v);
+    return /[;"\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const csv = '\ufeff' + [header, ...rows].map((r) => r.map(cell).join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function imgTag(id, size = 'small', cls = '') {
+  const src = state.status?.demo ? null : `https://api.scryfall.com/cards/cardmarket/${id}?format=image&version=${size}`;
+  return src
+    ? `<img class="${cls}" loading="lazy" src="${src}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph ${cls}'}))">`
+    : `<div class="ph ${cls}"></div>`;
+}
+
+// ---------------------------------------------------------------- Übersicht
+$('#home-min').addEventListener('change', loadHome);
+document.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
+  const d = b.dataset.dir;
+  mv.direction = d;
+  $('#mv-dir').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.v === d)));
+  showTab(b.dataset.goto);
+}));
+
+async function loadHome() {
+  const d = await api(`/api/dashboard?minPrice=${$('#home-min').value}`);
+  const p = d.portfolio;
+  updateAlertBadge(p.alerts);
+
+  $('#home-alerts').innerHTML = p.alerts.length ? `<div class="alert-box">🔔 <b>Preisalarm:</b> ${p.alerts.map((a) =>
+    `<button class="link" data-open="${a.id}">${esc(a.name)}</button> ${a.alert === 'below' ? `ist auf ${eur(a.price)} gefallen (Alarm unter ${eur(a.alert_below)})` : `ist auf ${eur(a.price)} gestiegen (Alarm über ${eur(a.alert_above)})`}`).join(' · ')}</div>` : '';
+
+  const kpi = (label, value, sub = '', cls = '') => `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+  $('#home-kpis').innerHTML = [
+    d.gainers.rows[0]
+      ? kpi('Größter Anstieg', `<span class="up">${arrow(d.gainers.rows[0].change)} ${pct(d.gainers.rows[0].change)}</span>`, esc(d.gainers.rows[0].name))
+      : kpi('Größter Anstieg', '–', 'noch keine Daten'),
+    kpi('Karten gestiegen', `▲ ${d.up.toLocaleString('de-DE')}`, `von ${d.cards.toLocaleString('de-DE')} Karten ab ${eur(d.minPrice)}`, 'up'),
+    kpi('Karten gefallen', `▼ ${d.down.toLocaleString('de-DE')}`, `${d.flat.toLocaleString('de-DE')} etwa gleich geblieben`, 'down'),
+    p.owned
+      ? kpi('Wert meiner Karten', eur(p.value), p.profit != null ? `<span class="${dir(p.profit)}">${p.profit >= 0 ? '+' : ''}${eur(p.profit)} ${p.profit >= 0 ? 'Gewinn' : 'Verlust'}</span>` : `${p.copies} Karten im Bestand`)
+      : kpi('Meine Karten', `${p.watched}`, 'gemerkt · Menge eintragen für Gesamtwert'),
+  ].join('');
+
+  const total = d.up + d.down + d.flat || 1;
+  const w = (n) => `${((n / total) * 100).toFixed(1)}%`;
+  $('#home-mood').innerHTML = `
+    <div class="mood-big ${dir(d.medianChange)}">${moodWord(d)}</div>
+    <div class="muted small">Typische Karte: ${pct(d.medianChange)} (Ø 7 Tage gegen Ø 30 Tage)</div>
+    <div class="mood-bar" role="img" aria-label="${d.up} gestiegen, ${d.flat} gleich, ${d.down} gefallen">
+      <span class="seg-down" style="width:${w(d.down)}"></span><span class="seg-flat" style="width:${w(d.flat)}"></span><span class="seg-up" style="width:${w(d.up)}"></span>
+    </div>
+    <div class="mood-legend">
+      <span><i class="dot down"></i>Gefallen ${Math.round((d.down / total) * 100)} %</span>
+      <span><i class="dot flat"></i>Gleich ${Math.round((d.flat / total) * 100)} %</span>
+      <span><i class="dot up"></i>Gestiegen ${Math.round((d.up / total) * 100)} %</span>
+    </div>
+    <p class="hint">„Gleich“ heißt weniger als ±2 % Veränderung.</p>`;
+  $('#home-hist').innerHTML = d.cards ? histogramSvg(d.histogram) : '<div class="empty small">Noch keine Preise geladen.</div>';
+
+  const mini = (c) => `<div class="mini" data-open="${c.id}">
+      ${imgTag(c.id, 'normal', 'mini-img')}
+      <div class="mini-body">
+        <div class="mini-name">${esc(c.name)}</div>
+        <div class="mini-set">${setLabel(c)}</div>
+        <div class="mini-row"><b>${eur(c.trend)}</b>${c.change != null ? `<span class="chg ${dir(c.change)}">${arrow(c.change)} ${pct(c.change)}</span>` : ''}</div>
+        ${sparkline(c.spark, { w: 120, h: 26 })}
+      </div></div>`;
+  const fill = (sel, rows) => { $(sel).innerHTML = rows.length ? rows.map(mini).join('') : '<div class="empty small">Keine Karten.</div>'; };
+  fill('#home-up', d.gainers.rows);
+  fill('#home-down', d.losers.rows);
+  fill('#home-top', d.mostValuable);
+  bindRows($('#tab-home'));
+}
+
+function moodWord(d) {
+  const m = d.medianChange ?? 0;
+  if (m > 0.03) return 'Stark steigend';
+  if (m > 0.005) return 'Leicht steigend';
+  if (m < -0.03) return 'Stark fallend';
+  if (m < -0.005) return 'Leicht fallend';
+  return 'Ruhig';
+}
+
+function updateAlertBadge(alerts) {
+  const b = $('#alert-badge');
+  b.hidden = !alerts?.length;
+  b.textContent = alerts?.length ? `🔔 ${alerts.length}` : '';
 }
 
 // ---------------------------------------------------------------- Listen
@@ -179,45 +315,179 @@ $('#mv-dir').addEventListener('click', (e) => {
   $('#mv-dir').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   loadMovers();
 });
-['#mv-days', '#mv-min', '#mv-foil'].forEach((s) => $(s).addEventListener('change', loadMovers));
+['#mv-days', '#mv-min', '#mv-max', '#mv-sort', '#mv-foil', '#mv-set'].forEach((s) => $(s).addEventListener('change', loadMovers));
+let mvTimer;
+$('#mv-q').addEventListener('input', () => { clearTimeout(mvTimer); mvTimer = setTimeout(loadMovers, 350); });
 
 async function loadMovers() {
   const box = $('#movers');
   box.innerHTML = '<div class="empty">Lade …</div>';
   const days = $('#mv-days').value;
-  const params = new URLSearchParams({ direction: mv.direction, days, minPrice: $('#mv-min').value, foil: $('#mv-foil').checked ? '1' : '0' });
+  const params = new URLSearchParams({
+    direction: mv.direction, days, minPrice: $('#mv-min').value, maxPrice: $('#mv-max').value,
+    sort: $('#mv-sort').value, foil: $('#mv-foil').checked ? '1' : '0', set: $('#mv-set').value, q: $('#mv-q').value.trim(),
+  });
   const r = await api(`/api/movers?${params}`);
+  state.lists.movers = r;
   const word = mv.direction === 'up' ? 'gestiegen' : 'gefallen';
   $('#mv-source').textContent = r.source === 'history'
     ? `Top ${r.rows.length}: Karten, deren Preis vom ${fmtDay(r.from)} bis ${fmtDay(r.to)} am stärksten ${word} ist.`
     : `Top ${r.rows.length}: Karten, deren Durchschnittspreis der letzten 7 Tage am stärksten gegenüber dem 30-Tage-Durchschnitt ${word} ist (echte Verkaufspreise von Cardmarket).`;
+  renderMovers();
+}
+
+function renderMovers() {
+  const r = state.lists.movers;
+  const box = $('#movers');
+  if (!r) return;
   const labels = r.source === 'history' ? [fmtDay(r.from), fmtDay(r.to)] : ['Ø 30 Tage', 'Ø 7 Tage'];
+  const tiles = state.view.movers === 'tiles';
+  box.className = tiles ? 'tile-grid' : 'list';
   box.innerHTML = r.rows.length
-    ? r.rows.map((c, i) => moverHtml(c, i + 1, labels)).join('')
+    ? r.rows.map((c, i) => (tiles ? cardTileHtml(c, i + 1) : moverHtml(c, i + 1, labels))).join('')
     : `<div class="empty">${state.status?.products ? 'Keine Karten für diese Filter.' : 'Noch keine Preise geladen.'}</div>`;
   bindRows(box);
 }
 
+$('#mv-csv').addEventListener('click', () => {
+  const r = state.lists.movers;
+  if (!r?.rows.length) return;
+  const foil = $('#mv-foil').checked;
+  downloadCsv(`kartenhain-trends-${mv.direction === 'up' ? 'gestiegen' : 'gefallen'}.csv`,
+    ['Rang', 'Karte', 'Edition', 'Vorher (€)', 'Jetzt (€)', 'Veränderung (%)', 'Preis-Trend (€)', 'Günstigstes Angebot (€)', 'Cardmarket-ID'],
+    r.rows.map((c, i) => [i + 1, c.name, c.set_name ?? '', c.then_price, c.now_price, c.change * 100,
+      foil ? c.trend_foil : c.trend, foil ? c.low_foil : c.low, c.id]));
+});
+
 function moverHtml(c, rank, [fromLabel, toLabel]) {
-  const img = scryImg(c.id);
   return `<div class="row mover" data-id="${c.id}">
-    ${img ? `<img loading="lazy" src="${img}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph'}))">` : '<div class="ph"></div>'}
+    ${imgTag(c.id)}
     <div><div class="name"><span class="rank">${rank}.</span> ${esc(c.name)}</div>
       <div class="sub">${setLabel(c)}</div>
       <div class="sub">${fromLabel}: <b>${eur(c.then_price)}</b> → ${toLabel}: <b>${eur(c.now_price)}</b> · Preis-Trend ${eur($('#mv-foil').checked ? c.trend_foil : c.trend)}</div></div>
+    <div class="spark-col">${sparkline(c.spark)}</div>
     <div class="chg big ${dir(c.change)}">${arrow(c.change)} ${pct(c.change)}</div>
     <button class="star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
   </div>`;
 }
 
-// ---------------------------------------------------------------- Merkliste
-async function loadWatchlist() {
-  const box = $('#watchlist');
-  const rows = await api('/api/watchlist');
-  box.innerHTML = rows.length
-    ? rows.map((c) => rowHtml(c, { change: c.historyChange.d7 ?? c.guideTrend?.change7v30, changeLabel: '7 Tage' })).join('')
-    : '<div class="empty">Noch keine Karten gemerkt.</div>';
+/** Kachel mit großem Kartenbild. */
+function cardTileHtml(c, rank) {
+  return `<div class="ctile row" data-id="${c.id}">
+    <div class="ctile-img">${imgTag(c.id, 'normal', 'ctile-pic')}
+      <span class="ctile-rank">${rank}</span>
+      <span class="ctile-badge ${dir(c.change)}">${arrow(c.change)} ${pct(c.change)}</span>
+      <button class="star ctile-star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
+    </div>
+    <div class="ctile-body">
+      <div class="name">${esc(c.name)}</div>
+      <div class="sub">${setLabel(c)}</div>
+      <div class="ctile-prices"><span>${eur(c.then_price)} → <b>${eur(c.now_price)}</b></span>${sparkline(c.spark, { w: 70, h: 22 })}</div>
+    </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------- Schnäppchen
+['#dl-min', '#dl-ratio', '#dl-sort', '#dl-set'].forEach((s) => $(s).addEventListener('change', loadDeals));
+
+async function loadDeals() {
+  const box = $('#deals');
+  box.innerHTML = '<div class="empty">Lade …</div>';
+  const params = new URLSearchParams({ minPrice: $('#dl-min').value, maxRatio: $('#dl-ratio').value, sort: $('#dl-sort').value, set: $('#dl-set').value });
+  const rows = (state.lists.deals = await api(`/api/deals?${params}`));
+  box.innerHTML = rows.length ? rows.map(dealHtml).join('') : '<div class="empty">Keine Schnäppchen für diese Filter.</div>';
   bindRows(box);
+}
+
+function dealHtml(c) {
+  const pctLow = Math.max(0, Math.min(100, (c.low / c.trend) * 100));
+  return `<div class="row deal" data-id="${c.id}">
+    ${imgTag(c.id)}
+    <div><div class="name">${esc(c.name)}</div><div class="sub">${setLabel(c)}</div>
+      <div class="deal-bar" title="Günstigstes Angebot im Verhältnis zum Preis-Trend">
+        <span class="deal-fill" style="width:${pctLow.toFixed(1)}%"></span>
+        <span class="deal-lbl">ab <b>${eur(c.low)}</b></span><span class="deal-lbl right">Trend <b>${eur(c.trend)}</b></span>
+      </div></div>
+    <div class="deal-save"><div class="big up">−${Math.round(c.discount * 100)} %</div><div class="sub">${eur(c.spread)} unter Trend</div></div>
+    <button class="star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
+  </div>`;
+}
+
+$('#dl-csv').addEventListener('click', () => {
+  const rows = state.lists.deals;
+  if (!rows?.length) return;
+  downloadCsv('kartenhain-schnaeppchen.csv',
+    ['Karte', 'Edition', 'Günstigstes Angebot (€)', 'Preis-Trend (€)', 'Ersparnis (€)', 'Ersparnis (%)', 'Ø 7 Tage (€)', 'Cardmarket-ID'],
+    rows.map((c) => [c.name, c.set_name ?? '', c.low, c.trend, c.spread, c.discount * 100, c.avg7, c.id]));
+});
+
+// ---------------------------------------------------------------- Meine Karten
+async function loadWatchlist() {
+  const [rows, pf] = await Promise.all([api('/api/watchlist'), api('/api/portfolio')]);
+  updateAlertBadge(pf.alerts);
+  const kpi = (label, value, sub = '') => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+  $('#pf-kpis').innerHTML = [
+    kpi('Gesamtwert', eur(pf.value), `${pf.copies} Karten · ${pf.owned} verschiedene`),
+    kpi('Einkaufswert', pf.cost != null ? eur(pf.cost) : '–', 'nur Karten mit Einkaufspreis'),
+    kpi('Gewinn / Verlust', pf.profit != null ? `<span class="${dir(pf.profit)}">${pf.profit >= 0 ? '+' : ''}${eur(pf.profit)}</span>` : '–',
+      pf.cost ? `<span class="${dir(pf.profit)}">${pct(pf.profit / pf.cost)}</span>` : 'Einkaufspreis eintragen'),
+    kpi('Preisalarme', pf.alerts.length ? `🔔 ${pf.alerts.length}` : '0', pf.alerts.length ? 'ausgelöst' : 'nichts ausgelöst'),
+  ].join('');
+  areaChart($('#pf-chart'), pf.history, { label: 'Wert meiner Karten', tooltip });
+
+  const box = $('#watchlist');
+  box.innerHTML = rows.length ? rows.map(ownHtml).join('') : '<div class="empty">Noch keine Karten gemerkt. Tippe bei einer Karte auf ☆.</div>';
+  bindRows(box);
+  box.querySelectorAll('.own-form').forEach(bindOwnForm);
+}
+
+function ownHtml(c) {
+  const chg = c.historyChange.d7 ?? c.guideTrend?.change7v30;
+  return `<div class="own ${c.alert ? 'alerted' : ''}">
+    <div class="row own-row" data-id="${c.id}">
+      ${imgTag(c.id)}
+      <div><div class="name">${esc(c.name)}${c.foil ? ' <span class="pill">Foil</span>' : ''}</div><div class="sub">${setLabel(c)}</div>
+        ${c.alert ? `<div class="alert-line">🔔 ${c.alert === 'below' ? `unter ${eur(c.alert_below)} gefallen` : `über ${eur(c.alert_above)} gestiegen`}</div>` : ''}</div>
+      <div class="spark-col">${sparkline(c.spark)}</div>
+      <div class="price">${eur(c.value_each)}<small class="${dir(chg)}">${arrow(chg)} ${pct(chg)}</small></div>
+      <button class="star on" data-star="${c.id}" aria-label="Nicht mehr merken">★</button>
+    </div>
+    ${ownFormHtml(c.id, c)}
+    <div class="own-sum">
+      ${c.qty ? `<span>Wert: <b>${eur(c.value)}</b></span>` : ''}
+      ${c.profit != null ? `<span class="${dir(c.profit)}">${c.profit >= 0 ? 'Gewinn' : 'Verlust'}: <b>${c.profit >= 0 ? '+' : ''}${eur(c.profit)}</b></span>` : ''}
+    </div>
+  </div>`;
+}
+
+function ownFormHtml(id, o = {}) {
+  const v = (x) => (x == null ? '' : String(x));
+  return `<form class="own-form" data-id="${id}">
+    <label>Menge<input type="number" name="qty" min="0" step="1" value="${v(o.qty || '')}" placeholder="0"></label>
+    <label>Einkaufspreis / Stück<input type="number" name="buy_price" min="0" step="0.01" value="${v(o.buy_price)}" placeholder="€"></label>
+    <label>Alarm unter<input type="number" name="alert_below" min="0" step="0.01" value="${v(o.alert_below)}" placeholder="€"></label>
+    <label>Alarm über<input type="number" name="alert_above" min="0" step="0.01" value="${v(o.alert_above)}" placeholder="€"></label>
+    <label class="check"><input type="checkbox" name="foil" ${o.foil || o.own_foil ? 'checked' : ''}> Foil</label>
+    <span class="saved" hidden>✓ gespeichert</span>
+  </form>`;
+}
+
+function bindOwnForm(form, onSaved) {
+  let t;
+  const save = async () => {
+    const f = new FormData(form);
+    await api(`/api/watchlist/${form.dataset.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ qty: f.get('qty'), buy_price: f.get('buy_price'), alert_below: f.get('alert_below'), alert_above: f.get('alert_above'), foil: f.get('foil') === 'on' }),
+    });
+    const ok = form.querySelector('.saved');
+    ok.hidden = false;
+    setTimeout(() => { ok.hidden = true; }, 1500);
+    onSaved?.();
+  };
+  form.addEventListener('input', () => { clearTimeout(t); t = setTimeout(save, 600); });
+  form.addEventListener('change', () => { clearTimeout(t); save(); });
+  form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
 }
 
 // ---------------------------------------------------------------- Detail
@@ -285,6 +555,16 @@ function renderCard() {
   const hc = state.foil ? null : c.historyChange;
   const tile = (label, value, delta, deltaLabel) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>`
     + (delta !== undefined ? `<div class="delta ${dir(delta)}">${arrow(delta)} ${pct(delta)} <span class="muted">${deltaLabel}</span></div>` : '') + '</div>';
+  $('#d-own').innerHTML = `<div class="card-head"><h3>Meine Karten</h3><span class="muted small">${c.watched ? 'Wird automatisch gespeichert' : 'Eintragen merkt die Karte automatisch'}</span></div>`
+    + ownFormHtml(c.id, c.own ?? {});
+  bindOwnForm($('#d-own .own-form'), () => {
+    c.watched = true;
+    $('#d-watch').textContent = '★ Gemerkt';
+    const f = new FormData($('#d-own .own-form'));
+    const num = (k) => (f.get(k) === '' ? null : Number(f.get(k)));
+    c.own = { qty: num('qty') ?? 0, buy_price: num('buy_price'), alert_below: num('alert_below'), alert_above: num('alert_above'), foil: f.get('foil') === 'on' ? 1 : 0 };
+    renderChart();
+  });
   $('#d-tiles').innerHTML = [
     tile('Preis-Trend <span class="info" title="Typischer Verkaufspreis laut Cardmarket (geglätteter Durchschnitt der letzten Verkäufe). Gleicher Wert wie „Preis-Trend“ auf der Cardmarket-Kartenseite.">ⓘ</span>', eur(c['trend' + f]), g?.change7v30, '7T-Ø vs. 30T-Ø'),
     tile('Günstigstes Angebot <span class="info" title="Billigstes Angebot auf Cardmarket, egal welcher Zustand und welche Sprache.">ⓘ</span>', eur(c['low' + f])),
@@ -312,7 +592,7 @@ function renderChart() {
   }
   const series = state.foil
     ? [{ key: 'trend_foil', name: 'Preis-Trend Foil', color: 'var(--series-1)' }]
-    : [{ key: 'trend', name: 'Preis-Trend', color: 'var(--series-1)' }, { key: 'low', name: 'Ab-Preis', color: 'var(--series-2)' }];
+    : [{ key: 'trend', name: 'Preis-Trend', color: 'var(--series-1)' }, { key: 'low', name: 'Günstigstes', color: 'var(--series-2)' }];
   const usable = series.filter((s) => hist.some((h) => h[s.key] != null));
 
   $('#d-legend').innerHTML = usable.length > 1 ? usable.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('') : '';
@@ -330,7 +610,9 @@ function renderChart() {
   const W = Math.max(box.clientWidth || 600, 280), H = 260;
   const m = { l: 52, r: usable.length > 1 ? 70 : 16, t: 12, b: 26 };
   const t0 = Date.parse(hist[0].day), t1 = Date.parse(hist[hist.length - 1].day);
+  const buy = c.own?.qty > 0 && c.own?.buy_price != null && Boolean(c.own.foil) === state.foil ? c.own.buy_price : null;
   const vals = hist.flatMap((h) => usable.map((s) => h[s.key])).filter((v) => v != null);
+  if (buy != null) vals.push(buy);
   let lo = Math.min(...vals), hi = Math.max(...vals);
   const pad = (hi - lo) * 0.1 || hi * 0.1 || 1;
   lo = Math.max(0, lo - pad); hi += pad;
@@ -361,6 +643,7 @@ function renderChart() {
     </g>
     ${paths.map((p) => `<path d="${p.d}" fill="none" stroke="${p.s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`).join('')}
     ${usable.length > 1 ? paths.map((p) => p.lastPt ? `<text x="${x(p.lastPt.day) + 6}" y="${y(p.lastPt[p.s.key]) + 4}" font-size="11" fill="var(--text-2)">${p.s.name}</text>` : '').join('') : ''}
+    ${buy != null ? `<line class="buy-line" x1="${m.l}" x2="${W - m.r}" y1="${y(buy)}" y2="${y(buy)}"/><text class="buy-label" x="${m.l + 6}" y="${y(buy) - 5}">Dein Einkaufspreis ${eur(buy)}</text>` : ''}
     <line class="hover-line" id="hv-line" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>
     ${usable.map((s, i) => `<circle id="hv-dot-${i}" r="4.5" fill="${s.color}" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>`).join('')}
     <rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hv-hit"/>
@@ -437,6 +720,9 @@ async function loadOffers() {
 
 // ---------------------------------------------------------------- Start
 await loadStatus();
-let startTab = 'search';
-try { startTab = localStorage.getItem('kh-tab') || 'search'; } catch {}
+try { state.view.movers = localStorage.getItem('kh-view-movers') || 'list'; } catch { state.view.movers = 'list'; }
+document.querySelectorAll('.view-toggle[data-for="movers"] button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state.view.movers)));
+loadSets().catch(() => {});
+let startTab = 'home';
+try { startTab = localStorage.getItem('kh-tab') || 'home'; } catch {}
 showTab(startTab);
