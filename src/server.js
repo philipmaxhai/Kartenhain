@@ -7,7 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, getMeta, setMeta } from './db.js';
 import { downloadAndImport, fetchCheapestOffers, hasApiCredentials, cheapest } from './cardmarket.js';
-import { searchCards, getCard, topMovers, getWatchlist, setWatched } from './trends.js';
+import { searchCards, getCard, topMovers, getWatchlist, setWatched, updateWatch } from './trends.js';
+import { dashboard, deals, portfolio, listSets } from './market.js';
 import { seedDemo, demoArticles } from './demo.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -67,11 +68,26 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
     ['GET', /^\/api\/movers$/, (m, q) => topMovers(db, {
       direction: q.get('direction') === 'down' ? 'down' : 'up',
       minPrice: Number(q.get('minPrice') ?? 2),
+      maxPrice: q.get('maxPrice') ? Number(q.get('maxPrice')) : null,
       days: Number(q.get('days') ?? 7),
       foil: q.get('foil') === '1',
       limit: Number(q.get('limit') ?? 100),
+      setId: q.get('set') || null,
+      q: q.get('q') || '',
+      sort: q.get('sort') === 'abs' ? 'abs' : 'pct',
     })],
+    ['GET', /^\/api\/dashboard$/, (m, q) => dashboard(db, { minPrice: Number(q.get('minPrice') ?? 2) })],
+    ['GET', /^\/api\/deals$/, (m, q) => deals(db, {
+      minPrice: Number(q.get('minPrice') ?? 5),
+      maxRatio: Number(q.get('maxRatio') ?? 0.7),
+      setId: q.get('set') || null,
+      q: q.get('q') || '',
+      sort: q.get('sort') === 'pct' ? 'pct' : 'abs',
+    })],
+    ['GET', /^\/api\/sets$/, () => listSets(db)],
+    ['GET', /^\/api\/portfolio$/, () => portfolio(db)],
     ['GET', /^\/api\/watchlist$/, () => getWatchlist(db)],
+    ['PUT', /^\/api\/watchlist\/(\d+)$/, async (m, q, req) => updateWatch(db, m[1], await readJson(req))],
     ['POST', /^\/api\/watchlist\/(\d+)$/, (m) => { setWatched(db, m[1], true); return { ok: true }; }],
     ['DELETE', /^\/api\/watchlist\/(\d+)$/, (m) => { setWatched(db, m[1], false); return { ok: true }; }],
     ['POST', /^\/api\/update$/, async () => runUpdate()],
@@ -83,7 +99,7 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
       if (url.pathname.startsWith('/api/')) {
         for (const [method, re, fn] of routes) {
           const m = url.pathname.match(re);
-          if (m && req.method === method) return sendJson(res, 200, await fn(m, url.searchParams));
+          if (m && req.method === method) return sendJson(res, 200, await fn(m, url.searchParams, req));
         }
         return sendJson(res, 404, { error: 'Unbekannte Adresse' });
       }
@@ -105,6 +121,19 @@ export function openBrowser(url) {
     child.on('error', () => {});
     child.unref();
   } catch { /* kein Browser gefunden: Adresse steht in der Konsole */ }
+}
+
+async function readJson(req) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > 1e5) httpError(413, 'Anfrage zu groß');
+  }
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    return httpError(400, 'Ungültige Daten');
+  }
 }
 
 function httpError(status, message) {
