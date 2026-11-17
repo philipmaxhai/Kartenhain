@@ -163,7 +163,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   // Täglich neue Cardmarket-Preise holen (der Preisguide wird einmal am Tag erneuert).
   const maybeUpdate = async () => {
     const last = getMeta(db, 'lastUpdate');
-    if (last && Date.now() - new Date(last).getTime() < 20 * 3600 * 1000) return;
+    const noSets = db.prepare('SELECT COUNT(*) AS n FROM expansions').get().n === 0; // nach Update auf neue Version
+    if (last && !noSets && Date.now() - new Date(last).getTime() < 20 * 3600 * 1000) return;
     try {
       console.log('Lade aktuelle Cardmarket-Preise …');
       const r = await app.runUpdate();
