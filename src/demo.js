@@ -12,7 +12,14 @@ const CARDS = [
   ['Doubling Season', 45], ['Esper Sentinel', 9], ['Fury', 28], ['Solitude', 26],
   ['Urza\'s Saga', 32], ['Mox Opal', 70], ['Ancient Tomb', 48], ['Fatal Push', 3],
   ['Snapcaster Mage', 9], ['Tarmogoyf', 5], ['Liliana of the Veil', 24], ['Grief', 15],
+  // günstige Karten (Cent-Bereich bis wenige Euro), damit auch "bis 1 €" etwas zeigt
+  ['Opt', 0.12], ['Consider', 0.25], ['Llanowar Elves', 0.3], ['Duress', 0.18], ['Shock', 0.14],
+  ['Negate', 0.11], ['Arcane Signet', 0.6], ['Command Tower', 0.4], ['Evolving Wilds', 0.16],
+  ['Cultivate', 0.5], ["Kodama's Reach", 0.65], ['Beast Within', 0.85], ['Swiftfoot Boots', 0.9],
+  ['Rampant Growth', 0.3], ['Brainstorm', 0.95], ['Ponder', 0.8], ['Preordain', 0.7],
+  ['Dark Ritual', 0.45], ['Thrill of Possibility', 0.1], ['Murder', 0.13], ['Mind Stone', 0.35],
 ];
+export const DEMO_VERSION = '3';
 const SETS = [[101, 'Demo-Edition Grundset', 'DGS', '2024-06-01', 1], [102, 'Demo-Edition Neuauflage', 'DNA', '2025-02-01', 0.6],
   [103, 'Demo-Edition Sonderversion', 'DSV', '2023-09-01', 3.5], [104, 'Demo-Edition Erstauflage', 'DEA', '1994-01-01', 12]];
 
@@ -26,16 +33,20 @@ function rng(seed) {
 
 export function seedDemo(db, { days = 120, endDay = new Date().toISOString().slice(0, 10) } = {}) {
   const rand = rng(42);
+  db.exec('DELETE FROM products; DELETE FROM prices; DELETE FROM history; DELETE FROM history_days; DELETE FROM expansions; DELETE FROM watchlist;');
   const insProduct = db.prepare('INSERT OR REPLACE INTO products (id, name, expansion_id, category) VALUES (?, ?, ?, ?)');
-  const insHist = db.prepare('INSERT OR REPLACE INTO history (id, day, trend, low, avg1, trend_foil) VALUES (?, ?, ?, ?, ?, ?)');
+  const insHist = db.prepare(`INSERT OR REPLACE INTO history (id, day, trend, low, avg1, trend_foil, avg7, avg7_foil)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
   const insPrice = db.prepare(`INSERT OR REPLACE INTO prices (id, avg, low, trend, avg1, avg7, avg30,
     avg_foil, low_foil, trend_foil, avg1_foil, avg7_foil, avg30_foil, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const r2 = (v) => Math.round(v * 100) / 100;
   let id = 900000;
 
   const insSet = db.prepare('INSERT OR REPLACE INTO expansions (id, name, code, release_date) VALUES (?, ?, ?, ?)');
+  const insDay = db.prepare('INSERT OR REPLACE INTO history_days (day, floor) VALUES (?, 0)');
   tx(db, () => {
     for (const [sid, sname, scode, sdate] of SETS) insSet.run(sid, sname, scode, sdate);
+    for (let d = days - 1; d >= 0; d--) insDay.run(shiftDay(endDay, -d)); // Demo: alle Karten jeden Tag
     for (const [name, base] of CARDS) {
       const printings = 1 + Math.floor(rand() * 4);
       for (let k = 0; k < printings; k++) {
@@ -46,12 +57,15 @@ export function seedDemo(db, { days = 120, endDay = new Date().toISOString().sli
         let price = base * (0.7 + rand() * 0.8) * SETS[k][4];
         const series = [];
         for (let d = days - 1; d >= 0; d--) {
-          price = Math.max(0.1, price * (1 + drift + (rand() - 0.5) * 0.05));
+          price = Math.max(0.02, price * (1 + drift + (rand() - 0.5) * 0.05));
           series.push({ day: shiftDay(endDay, -d), trend: r2(price) });
         }
-        for (const s of series) {
-          insHist.run(id, s.day, s.trend, r2(s.trend * (0.8 + rand() * 0.1)), r2(s.trend * (0.95 + rand() * 0.1)), r2(s.trend * 2.2));
-        }
+        series.forEach((s, i) => {
+          const week = series.slice(Math.max(0, i - 6), i + 1);
+          const avg7 = r2(week.reduce((a, w) => a + w.trend, 0) / week.length);
+          insHist.run(id, s.day, s.trend, r2(s.trend * (0.8 + rand() * 0.1)), r2(s.trend * (0.95 + rand() * 0.1)), r2(s.trend * 2.2),
+            avg7, r2(avg7 * 2.2));
+        });
         const avg = (n) => r2(series.slice(-n).reduce((a, s) => a + s.trend, 0) / n);
         const last = series[series.length - 1].trend;
         insPrice.run(id, avg(3), r2(last * (0.45 + rand() * 0.45)), last, avg(1), avg(7), avg(30),
@@ -71,6 +85,8 @@ export function seedDemo(db, { days = 120, endDay = new Date().toISOString().sli
     ins.run(pid, now, qty, f == null ? null : Math.round(p * f * 100) / 100, null, i === 1 ? Math.round(p * 0.9 * 100) / 100 : null);
   });
   setMeta(db, 'demo', '1');
+  setMeta(db, 'demoVersion', DEMO_VERSION);
+  setMeta(db, 'priceGuideCreatedAt', `${endDay}T02:00:00+0100`);
   setMeta(db, 'lastUpdate', new Date().toISOString());
   return id - 900000;
 }

@@ -1,1 +1,3 @@
+# Windows-Startdateien mit CRLF-Zeilenenden genau so ausliefern (cmd braucht CRLF)
 *.bat -text
+*.cmd -text

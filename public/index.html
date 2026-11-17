@@ -4,67 +4,87 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kartenhain Preistracker</title>
+  <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171a21'/%3E%3Cpath d='M9 6h14l5.5 7L16 27 3.5 13z' fill='none' stroke='%23d8b25a' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M3.5 13h25M16 13v14' fill='none' stroke='%23d8b25a' stroke-width='1.5'/%3E%3C/svg%3E">
+  <script>
+    // Hell/Dunkel vor dem ersten Zeichnen setzen, damit nichts flackert
+    try { const t = localStorage.getItem('kh-theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
 </head>
 <body>
   <header class="top">
-    <div class="brand">
-      <h1>Kartenhain</h1>
-      <span class="sub">MTG-Preistracker · Cardmarket</span>
+    <div class="top-inner">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M9 5h14l6 7.5L16 28 3 12.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M3 12.5h26M12.5 5L16 12.5 19.5 5M16 12.5V28M10.5 12.5L16 28l5.5-15.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" opacity=".75"/>
+        </svg>
+        <div>
+          <h1>Kartenhain</h1>
+          <span class="tagline">Magic-Preistracker · Daten von Cardmarket</span>
+        </div>
+      </div>
+      <div class="top-right">
+        <div class="status" id="status">Lade …</div>
+        <button class="icon-btn" id="theme-toggle" aria-label="Hell/Dunkel umschalten" title="Hell/Dunkel umschalten"></button>
+      </div>
     </div>
-    <div class="status" id="status">Lade …</div>
+    <div class="mana-bar" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
   </header>
 
   <div id="demo-banner" class="banner" hidden>
-    Demo-Modus: Alle Preise und Angebote sind erfunden. Für echte Cardmarket-Preise <b>Start.bat</b> verwenden (nicht „Demo starten“).
+    <b>Demo-Modus:</b> Alle Preise sind erfunden. Für echte Cardmarket-Preise <b>Start.bat</b> verwenden (nicht „Demo starten“).
+  </div>
+  <div id="update-banner" class="banner update" role="status" hidden>
+    <b>Neue Version da:</b> Schließe das schwarze Fenster und starte <b>Start.bat</b> neu. Das Update läuft dann von selbst, deine Karten und Preise bleiben.
   </div>
 
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="home" aria-selected="true">Übersicht</button>
-    <button role="tab" data-tab="search" aria-selected="false">Suche</button>
-    <button role="tab" data-tab="movers" aria-selected="false">Trends</button>
-    <button role="tab" data-tab="deals" aria-selected="false">Schnäppchen</button>
-    <button role="tab" data-tab="watch" aria-selected="false">Meine Karten <span id="alert-badge" class="badge" hidden></span></button>
+  <nav class="tabs" role="tablist" aria-label="Bereiche">
+    <div class="tabs-inner">
+      <button role="tab" data-tab="home" aria-selected="true"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-4H4zm10-11h6V4h-6z"/></svg><span>Übersicht</span></button>
+      <button role="tab" data-tab="search" aria-selected="false"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg><span>Suche</span></button>
+      <button role="tab" data-tab="movers" aria-selected="false"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg><span>Trends</span></button>
+      <button role="tab" data-tab="deals" aria-selected="false"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.4"/></svg><span>Schnäppchen</span></button>
+      <button role="tab" data-tab="watch" aria-selected="false"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="13" height="17" rx="2"/><path d="M4 7v12a2 2 0 0 0 2 2h10"/></svg><span>Meine Karten</span><span id="alert-badge" class="badge" hidden></span></button>
+    </div>
   </nav>
 
   <main>
+    <!-- Preisbereich: gilt für alle Seiten -->
+    <div class="bandbar" id="bandbar">
+      <span class="band-label">Preisbereich<small>nach Verkaufswert</small></span>
+      <div class="chips" id="band-chips" role="group" aria-label="Preisbereich wählen"></div>
+      <label class="band-custom" id="band-custom">bis <input id="band-max" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 2" aria-label="Eigener Höchstpreis in Euro"> €</label>
+    </div>
+
     <!-- Übersicht -->
     <section id="tab-home" class="tab">
       <div id="home-alerts"></div>
-      <div class="kpis" id="home-kpis"></div>
-      <div class="card">
-        <div class="card-head">
-          <h3>Marktstimmung</h3>
-          <label class="small-label">Karten
-            <select id="home-min">
-              <option value="1">ab 1 €</option>
-              <option value="2" selected>ab 2 €</option>
-              <option value="5">ab 5 €</option>
-              <option value="20">ab 20 €</option>
-            </select>
-          </label>
-        </div>
-        <div class="mood-grid">
+      <div class="hero card">
+        <div class="hero-mood">
+          <div class="eyebrow">Marktstimmung <span id="home-band-note" class="muted"></span></div>
           <div id="home-mood"></div>
-          <div>
-            <div class="sub-head">Wie stark haben sich die Preise verändert?</div>
-            <div id="home-hist"></div>
-            <p class="hint">Jeder Balken zeigt, wie viele Karten um so viel Prozent gestiegen oder gefallen sind.</p>
-          </div>
+        </div>
+        <div class="hero-hist">
+          <div class="eyebrow">Wie stark haben sich die Preise verändert?</div>
+          <div id="home-hist"></div>
+          <p class="hint">Jeder Balken zeigt, wie viele Karten um so viel Prozent gestiegen (grün) oder gefallen (rot) sind. Vergleich: Ø Verkaufspreis der letzten 7 Tage gegen die letzten 30 Tage.</p>
         </div>
       </div>
+      <div class="kpis" id="home-kpis"></div>
       <div class="grid2">
         <div class="card">
-          <div class="card-head"><h3>▲ Stärkste Anstiege</h3><button class="link" data-goto="movers" data-dir="up">Top 100 →</button></div>
+          <div class="card-head"><h3><span class="up">▲</span> Stärkste Anstiege</h3><button class="link" data-goto="movers" data-dir="up">Top 100 ansehen →</button></div>
           <div id="home-up" class="mini-tiles"></div>
         </div>
         <div class="card">
-          <div class="card-head"><h3>▼ Stärkste Rückgänge</h3><button class="link" data-goto="movers" data-dir="down">Top 100 →</button></div>
+          <div class="card-head"><h3><span class="down">▼</span> Stärkste Rückgänge</h3><button class="link" data-goto="movers" data-dir="down">Top 100 ansehen →</button></div>
           <div id="home-down" class="mini-tiles"></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>Teuerste Karten</h3></div>
+        <div class="card-head"><h3>Wertvollste Karten <span class="muted small" id="home-top-note"></span></h3></div>
         <div id="home-top" class="mini-tiles six"></div>
       </div>
     </section>
@@ -72,47 +92,28 @@
     <!-- Suche -->
     <section id="tab-search" class="tab" hidden>
       <form id="search-form" class="searchbar" autocomplete="off">
-        <input id="q" type="search" placeholder="Kartenname, z. B. „The One Ring“" aria-label="Karte suchen" minlength="2" required>
-        <button type="submit">Suchen</button>
+        <input id="q" type="search" placeholder="Kartenname eingeben, z. B. „Lightning Bolt“" aria-label="Karte suchen" minlength="2" required>
+        <button type="submit" class="btn-primary">Suchen</button>
       </form>
+      <p class="hint" id="search-note">Pro Karte siehst du die günstigste und die teuerste Version und darunter alle Versionen mit ihrem echten Verkaufswert.</p>
       <div id="search-results" class="list"></div>
     </section>
 
     <!-- Trends -->
     <section id="tab-movers" class="tab" hidden>
-      <div class="filters">
+      <div class="toolbar">
         <div class="seg" id="mv-dir">
           <button data-v="up" aria-pressed="true">▲ Gestiegen</button>
           <button data-v="down" aria-pressed="false">▼ Gefallen</button>
         </div>
-        <label>Zeitraum
+        <label class="field">Zeitraum
           <select id="mv-days">
             <option value="7">7 Tage</option>
             <option value="30">30 Tage</option>
             <option value="90">90 Tage</option>
           </select>
         </label>
-        <label>Preis
-          <select id="mv-min">
-            <option value="1">ab 1 €</option>
-            <option value="2" selected>ab 2 €</option>
-            <option value="5">ab 5 €</option>
-            <option value="10">ab 10 €</option>
-            <option value="25">ab 25 €</option>
-            <option value="50">ab 50 €</option>
-            <option value="100">ab 100 €</option>
-          </select>
-          <select id="mv-max" aria-label="Höchstpreis">
-            <option value="">bis beliebig</option>
-            <option value="5">bis 5 €</option>
-            <option value="10">bis 10 €</option>
-            <option value="25">bis 25 €</option>
-            <option value="50">bis 50 €</option>
-            <option value="100">bis 100 €</option>
-            <option value="500">bis 500 €</option>
-          </select>
-        </label>
-        <label>Sortieren
+        <label class="field">Sortieren
           <select id="mv-sort">
             <option value="pct">nach Prozent</option>
             <option value="abs">nach Euro</option>
@@ -120,18 +121,18 @@
         </label>
         <label class="check"><input type="checkbox" id="mv-foil"> Foil</label>
       </div>
-      <div class="filters">
-        <label class="grow">Edition
+      <div class="toolbar">
+        <label class="field grow">Edition
           <select id="mv-set" class="set-select"><option value="">alle Editionen</option></select>
         </label>
-        <label class="grow">Name enthält
+        <label class="field grow">Name enthält
           <input id="mv-q" type="search" placeholder="z. B. Ragavan">
         </label>
-        <div class="seg small view-toggle" data-for="movers">
+        <div class="seg view-toggle" data-for="movers">
           <button data-v="list" aria-pressed="true">☰ Liste</button>
           <button data-v="tiles" aria-pressed="false">▦ Kacheln</button>
         </div>
-        <button class="ghost small-btn" id="mv-csv">⬇ CSV</button>
+        <button class="btn-ghost" id="mv-csv" title="Liste als Excel-Datei (CSV) speichern">⬇ Excel</button>
       </div>
       <p class="hint" id="mv-source"></p>
       <div id="movers" class="list"></div>
@@ -140,38 +141,29 @@
     <!-- Schnäppchen -->
     <section id="tab-deals" class="tab" hidden>
       <div class="explain">
-        <b>Was ist das?</b> Karten, bei denen das <b>günstigste Angebot</b> deutlich unter dem <b>Preis-Trend</b> liegt.
-        Das kann ein gutes Einkaufsangebot sein. Achtung: Das günstigste Angebot ist oft schlechter Zustand oder eine andere Sprache,
-        also vor dem Kauf auf Cardmarket prüfen.
+        <b>Was ist das?</b> Karten, bei denen das <b>günstigste Angebot</b> deutlich unter dem <b>echten Verkaufswert</b>
+        (Ø Verkaufspreis der letzten 7 Tage) liegt. Daneben steht, was nach der Cardmarket-Gebühr ungefähr übrig bleibt.
+        Achtung: Das günstigste Angebot ist oft schlechter Zustand oder eine andere Sprache. Vor dem Kauf auf Cardmarket prüfen.
       </div>
-      <div class="filters">
-        <label>Preis-Trend
-          <select id="dl-min">
-            <option value="2">ab 2 €</option>
-            <option value="5" selected>ab 5 €</option>
-            <option value="10">ab 10 €</option>
-            <option value="25">ab 25 €</option>
-            <option value="50">ab 50 €</option>
-          </select>
-        </label>
-        <label>Angebot mindestens
+      <div class="toolbar">
+        <label class="field">Angebot mindestens
           <select id="dl-ratio">
-            <option value="0.8">20 % günstiger</option>
-            <option value="0.7" selected>30 % günstiger</option>
-            <option value="0.6">40 % günstiger</option>
-            <option value="0.5">50 % günstiger</option>
+            <option value="0.8">20 % unter Verkaufswert</option>
+            <option value="0.7" selected>30 % unter Verkaufswert</option>
+            <option value="0.6">40 % unter Verkaufswert</option>
+            <option value="0.5">50 % unter Verkaufswert</option>
           </select>
         </label>
-        <label>Sortieren
+        <label class="field">Sortieren
           <select id="dl-sort">
             <option value="abs">größte Ersparnis in €</option>
             <option value="pct">größte Ersparnis in %</option>
           </select>
         </label>
-        <label class="grow">Edition
+        <label class="field grow">Edition
           <select id="dl-set" class="set-select"><option value="">alle Editionen</option></select>
         </label>
-        <button class="ghost small-btn" id="dl-csv">⬇ CSV</button>
+        <button class="btn-ghost" id="dl-csv" title="Liste als Excel-Datei (CSV) speichern">⬇ Excel</button>
       </div>
       <div id="deals" class="list"></div>
     </section>
@@ -180,41 +172,60 @@
     <section id="tab-watch" class="tab" hidden>
       <div class="kpis" id="pf-kpis"></div>
       <div class="card">
-        <div class="card-head"><h3>Wert meiner Karten</h3></div>
+        <div class="card-head"><h3>Wert meiner Karten</h3><span class="muted small">nach Verkaufswert (Ø 7 Tage), Tag für Tag</span></div>
         <div id="pf-chart" class="area-wrap"></div>
       </div>
-      <p class="hint">Karten mit ☆ merken. Hier kannst du <b>Menge</b> und <b>Einkaufspreis</b> eintragen und einen <b>Preisalarm</b> setzen.
-        Der Preisverlauf gemerkter Karten wird täglich gespeichert, egal wie günstig sie sind.</p>
+      <p class="hint">Karten mit ☆ merken. Hier trägst du <b>Menge</b> und <b>Einkaufspreis</b> ein und setzt <b>Preisalarme</b>.
+        Alles wird automatisch gespeichert. Der Preisverlauf gemerkter Karten wird jeden Tag aufgezeichnet.</p>
       <div id="watchlist" class="list"></div>
     </section>
   </main>
+
+  <footer class="foot">
+    <span id="foot-version"></span>
+    <span>Preise: Cardmarket-Preisliste · Bilder: Scryfall · Editionen: MTGJSON</span>
+  </footer>
 
   <!-- Detailansicht -->
   <div id="detail" class="detail" hidden>
     <div class="detail-inner" role="dialog" aria-modal="true" aria-labelledby="d-name">
       <button class="close" id="d-close" aria-label="Schließen">×</button>
       <div class="d-head">
-        <img id="d-img" alt="" hidden>
+        <div class="d-art" id="d-art">
+          <img id="d-img" alt="" hidden>
+          <div class="d-art-ph" id="d-art-ph"></div>
+          <div class="foil-sheen"></div>
+        </div>
         <div class="d-meta">
           <h2 id="d-name"></h2>
-          <div id="d-set" class="muted"></div>
-          <div class="d-actions">
-            <button id="d-watch" class="ghost"></button>
-            <a id="d-cm" class="ghost" target="_blank" rel="noopener">Auf Cardmarket öffnen ↗</a>
-          </div>
+          <div id="d-set" class="d-set"></div>
           <div class="seg small" id="d-foil">
             <button data-v="0" aria-pressed="true">Normal</button>
-            <button data-v="1" aria-pressed="false">Foil</button>
+            <button data-v="1" aria-pressed="false">✦ Foil</button>
+          </div>
+          <div class="sale-hero" id="d-sale"></div>
+          <div class="d-actions">
+            <button id="d-watch" class="btn-ghost"></button>
+            <a id="d-cm" class="btn-gold" target="_blank" rel="noopener">Auf Cardmarket ansehen ↗</a>
           </div>
         </div>
       </div>
 
-      <div class="tiles" id="d-tiles"></div>
+      <div class="d-grid">
+        <div class="card">
+          <div class="card-head"><h3>Werte wie auf Cardmarket</h3><span class="muted small" id="d-cm-note"></span></div>
+          <dl class="cm-list" id="d-tiles"></dl>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Stimmt der Preis?</h3></div>
+          <div class="crosscheck" id="d-check"></div>
+        </div>
+      </div>
 
       <div class="card own-card" id="d-own"></div>
 
-      <div class="chart-card">
-        <div class="chart-head">
+      <div class="card">
+        <div class="card-head">
           <h3>Preisverlauf</h3>
           <div class="seg small" id="d-range">
             <button data-v="30" aria-pressed="false">30 T</button>
@@ -228,11 +239,11 @@
         <details class="table-view"><summary>Als Tabelle anzeigen</summary><div id="d-table"></div></details>
       </div>
 
-      <div class="offers-card">
-        <div class="chart-head">
+      <div class="card">
+        <div class="card-head">
           <h3>5 günstigste Angebote</h3>
-          <div class="filters small">
-            <label>Zustand mind.
+          <div class="toolbar tight">
+            <label class="field">Zustand mind.
               <select id="o-cond">
                 <option value="">egal</option>
                 <option value="NM">Near Mint</option>
@@ -241,7 +252,7 @@
                 <option value="LP">Light Played</option>
               </select>
             </label>
-            <label>Sprache
+            <label class="field">Sprache
               <select id="o-lang">
                 <option value="">alle</option>
                 <option value="1">Englisch</option>

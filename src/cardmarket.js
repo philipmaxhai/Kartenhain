@@ -15,7 +15,25 @@ export const CATALOG_URL =
 export const SETLIST_URL = 'https://mtgjson.com/api/v5/SetList.json';
 export const API_BASE = 'https://api.cardmarket.com/ws/v2.0/output.json';
 
+/**
+ * Ab diesem Preis (Verkaufswert oder Preis-Trend, normal oder Foil) wird jede Karte täglich im
+ * Verlauf gespeichert, gemerkte Karten immer. 0,10 € = die kleinste Preisstufe der Oberfläche,
+ * damit die Trends auch für günstige Karten vollständig sind. Ändern mit HISTORY_MIN_TREND.
+ */
+export const HISTORY_MIN_DEFAULT = 0.1;
+/** Die letzten so vielen Tage bleiben Tag für Tag erhalten, ältere werden ausgedünnt. */
+export const HISTORY_DAILY_DAYS = 100;
+
+export function historyMin(env = process.env) {
+  const raw = String(env.HISTORY_MIN_TREND ?? '').trim().replace(',', '.');
+  const v = Number(raw);
+  return raw !== '' && Number.isFinite(v) && v >= 0 ? v : HISTORY_MIN_DEFAULT;
+}
+
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+// Im Preisguide steht 0 für "gibt es nicht" (z. B. keine Foil-Version, keine Verkäufe in 7 Tagen).
+// Der kleinste echte Preis auf Cardmarket ist 0,02 €, also ist 0 nie ein Preis.
+const price = (v) => { const n = num(v); return n != null && n > 0 ? n : null; };
 
 export function today() {
   return new Date().toISOString().slice(0, 10);
@@ -63,13 +81,15 @@ export function importSets(db, setList) {
  * - products: alle Magic-Einzelkarten
  * - prices:   aktueller Preisguide
  * - history:  Momentaufnahme für heute (nur Karten ab `historyMinTrend` € oder auf der Merkliste,
- *             damit die Datenbank nicht explodiert)
+ *             damit die Datenbank nicht explodiert); ältere Tage werden danach ausgedünnt
  */
-export function importPriceData(db, { catalog, priceGuide, day = today(), historyMinTrend = 0.5 }) {
+export function importPriceData(db, { catalog, priceGuide, day, historyMinTrend = HISTORY_MIN_DEFAULT }) {
   const products = catalog?.products ?? [];
   const guides = priceGuide?.priceGuides ?? [];
   if (!guides.length) throw new Error('Preisguide ist leer oder hat ein unbekanntes Format.');
   const updated = priceGuide.createdAt ?? new Date().toISOString();
+  // Verlaufstag = Tag, an dem Cardmarket die Preisliste erstellt hat (nicht der Tag des Downloads)
+  day ??= /^\d{4}-\d{2}-\d{2}/.test(priceGuide.createdAt ?? '') ? priceGuide.createdAt.slice(0, 10) : today();
 
   const watch = new Set(db.prepare('SELECT id FROM watchlist').all().map((r) => r.id));
 
@@ -83,7 +103,7 @@ export function importPriceData(db, { catalog, priceGuide, day = today(), histor
       avg_foil, low_foil, trend_foil, avg1_foil, avg7_foil, avg30_foil, updated)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insHist = db.prepare(`
-    INSERT OR REPLACE INTO history (id, day, trend, low, avg1, trend_foil) VALUES (?, ?, ?, ?, ?, ?)`);
+    INSERT OR REPLACE INTO history (id, day, trend, low, avg1, trend_foil, avg7, avg7_foil) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
   let histCount = 0;
   tx(db, () => {
@@ -94,20 +114,54 @@ export function importPriceData(db, { catalog, priceGuide, day = today(), histor
     }
     for (const g of guides) {
       if (g.idProduct == null) continue;
-      const trend = num(g.trend);
-      const trendFoil = num(g['trend-foil']);
-      insPrice.run(g.idProduct, num(g.avg), num(g.low), trend, num(g.avg1), num(g.avg7), num(g.avg30),
-        num(g['avg-foil']), num(g['low-foil']), trendFoil, num(g['avg1-foil']), num(g['avg7-foil']),
-        num(g['avg30-foil']), updated);
-      if (watch.has(g.idProduct) || (trend ?? 0) >= historyMinTrend || (trendFoil ?? 0) >= historyMinTrend) {
-        insHist.run(g.idProduct, day, trend, num(g.low), num(g.avg1), trendFoil);
+      const trend = price(g.trend);
+      const trendFoil = price(g['trend-foil']);
+      const avg7 = price(g.avg7);
+      const avg7Foil = price(g['avg7-foil']);
+      insPrice.run(g.idProduct, price(g.avg), price(g.low), trend, price(g.avg1), avg7, price(g.avg30),
+        price(g['avg-foil']), price(g['low-foil']), trendFoil, price(g['avg1-foil']), avg7Foil,
+        price(g['avg30-foil']), updated);
+      // Höchster der Werte, nach denen die Oberfläche filtert (Verkaufswert, notfalls Preis-Trend)
+      const top = Math.max(trend ?? 0, avg7 ?? 0, trendFoil ?? 0, avg7Foil ?? 0);
+      if (watch.has(g.idProduct) || top >= historyMinTrend) {
+        insHist.run(g.idProduct, day, trend, price(g.low), price(g.avg1), trendFoil, avg7, avg7Foil);
         histCount++;
       }
     }
+    db.prepare('INSERT OR REPLACE INTO history_days (day, floor) VALUES (?, ?)').run(day, historyMinTrend);
   });
+  thinHistory(db, day);
   setMeta(db, 'lastUpdate', new Date().toISOString());
   setMeta(db, 'priceGuideCreatedAt', updated);
   return { products: products.length, prices: guides.length, history: histCount, day };
+}
+
+/**
+ * Hält die Datenbank klein: Die letzten HISTORY_DAILY_DAYS Tage bleiben Tag für Tag (genug für
+ * Trends über 7, 30 und 90 Tage), ältere Tage werden auf einen pro Woche ausgedünnt.
+ * Gemerkte Karten behalten ihren ganzen Verlauf. Gibt die Zahl der gelöschten Einträge zurück.
+ */
+export function thinHistory(db, today, { dailyDays = HISTORY_DAILY_DAYS } = {}) {
+  const cutoff = addDays(today, -dailyDays);
+  const days = db.prepare('SELECT DISTINCT day FROM history WHERE day < ? ORDER BY day').all(cutoff).map((r) => r.day);
+  const seen = new Set();
+  const drop = days.filter((d) => {
+    const week = addDays(d, -((new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7)); // Montag der Woche
+    if (seen.has(week)) return true;
+    seen.add(week);
+    return false; // erster Tag der Woche bleibt
+  });
+  if (!drop.length) return 0;
+  const del = db.prepare('DELETE FROM history WHERE day = ? AND id NOT IN (SELECT id FROM watchlist)');
+  let n = 0;
+  tx(db, () => { for (const d of drop) n += Number(del.run(d).changes); });
+  return n;
+}
+
+function addDays(day, delta) {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------

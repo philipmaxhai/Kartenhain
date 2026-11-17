@@ -1,5 +1,5 @@
 // Marktüberblick, Schnäppchen und Bestand ("Meine Karten").
-import { topMovers, getWatchlist, sparkFor } from './trends.js';
+import { topMovers, getWatchlist, sparkFor, saleSql, saleValue } from './trends.js';
 
 const PRICE_COLS = `p.trend, p.low, p.avg, p.avg1, p.avg7, p.avg30,
   p.trend_foil, p.low_foil, p.avg_foil, p.avg1_foil, p.avg7_foil, p.avg30_foil, p.updated`;
@@ -24,11 +24,19 @@ export function histogram(changes, step = 0.05, limit = 0.5) {
   return buckets;
 }
 
-export function dashboard(db, { minPrice = 2 } = {}) {
-  const minP = Number(minPrice) || 0;
+/** Preisbereich aus Anfrage-Werten: min immer ≥ 0, max leer = unbegrenzt. */
+export function priceBand(minPrice, maxPrice) {
+  const min = Math.max(0, Number(minPrice) || 0);
+  const max = Number(maxPrice) > 0 ? Number(maxPrice) : null;
+  return { min, max, maxSql: max ?? 1e12 };
+}
+
+export function dashboard(db, { minPrice = 0.1, maxPrice = null } = {}) {
+  const band = priceBand(minPrice, maxPrice);
+  // Preisbereich gilt für den Verkaufswert (hier immer Ø 7 Tage, weil er für den Vergleich nötig ist)
   const rows = db.prepare(`
     SELECT p.avg7, p.avg30, p.trend FROM prices p
-    WHERE p.trend >= ? AND p.avg30 > 0 AND p.avg7 > 0`).all(minP);
+    WHERE p.avg7 BETWEEN ? AND ? AND p.avg30 > 0 AND p.trend > 0`).all(band.min, band.maxSql);
   // Gleiche Regel wie bei den Trends: Ø 7 Tage gegen Ø 30 Tage, Trendpreis muss mitziehen
   const changes = rows.map((r) => (r.avg7 - r.avg30) / r.avg30);
   let up = 0, down = 0;
@@ -37,15 +45,25 @@ export function dashboard(db, { minPrice = 2 } = {}) {
     else if (changes[i] < -0.02 && r.trend < r.avg30) down++;
   });
 
-  const top = (direction) => topMovers(db, { direction, minPrice: minP, limit: 6 });
+  const top = (direction) => topMovers(db, { direction, minPrice: band.min, maxPrice: band.max, limit: 6 });
+  // Wertvollste Karten nach Verkaufswert. Einzelne Ausreißer-Verkäufe (Verkaufswert weit weg
+  // vom Preis-Trend) bleiben draußen, damit keine 5-€-Karte wegen eines Fehlkaufs oben steht.
+  const sale = saleSql();
   const mostValuable = db.prepare(`
-    SELECT pr.id, pr.name, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS}
+    SELECT pr.id, pr.name, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
+      (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
     FROM prices p JOIN products pr ON pr.id = p.id LEFT JOIN expansions e ON e.id = pr.expansion_id
-    WHERE p.trend IS NOT NULL ORDER BY p.trend DESC LIMIT 6`).all();
-  for (const r of mostValuable) r.spark = sparkFor(db, r);
+    WHERE ${sale} BETWEEN ? AND ? AND p.trend > 0 AND ${sale} BETWEEN p.trend / 3 AND p.trend * 3
+    ORDER BY ${sale} DESC LIMIT 6`).all(band.min, band.maxSql);
+  for (const r of mostValuable) {
+    r.watched = Boolean(r.watched);
+    r.sale_value = saleValue(r);
+    r.spark = sparkFor(db, r);
+  }
 
   return {
-    minPrice: minP,
+    minPrice: band.min,
+    maxPrice: band.max,
     cards: rows.length,
     up,
     down,
@@ -60,25 +78,30 @@ export function dashboard(db, { minPrice = 2 } = {}) {
 }
 
 /**
- * Schnäppchen: Karten, deren günstigstes Angebot deutlich unter dem Preis-Trend liegt.
+ * Schnäppchen: Karten, deren günstigstes Angebot deutlich unter dem Verkaufswert liegt.
+ * Verkaufswert = Ø Verkaufspreis der letzten 7 Tage (echte Verkäufe), notfalls Preis-Trend.
  * Achtung: Das günstigste Angebot kann schlechter Zustand oder eine andere Sprache sein.
  */
-export function deals(db, { minPrice = 5, maxRatio = 0.7, setId = null, q = '', limit = 100, sort = 'abs' } = {}) {
-  const args = [Number(minPrice) || 0, Number(maxRatio) || 0.7];
+export function deals(db, {
+  minPrice = 0.5, maxPrice = null, maxRatio = 0.7, setId = null, q = '', limit = 100, sort = 'abs',
+} = {}) {
+  const band = priceBand(minPrice, maxPrice);
+  const value = saleSql();
+  const args = [band.min, band.maxSql, Number(maxRatio) || 0.7];
   let extra = '';
   if (Number(setId) > 0) { extra += ' AND pr.expansion_id = ?'; args.push(Number(setId)); }
   const term = String(q ?? '').trim();
   if (term) { extra += " AND pr.name LIKE ? ESCAPE '\\'"; args.push(`%${term.replace(/[\\%_]/g, (c) => '\\' + c)}%`); }
   args.push(Math.min(Math.max(Number(limit) || 100, 1), 200));
-  const order = sort === 'pct' ? '(p.low / p.trend) ASC' : '(p.trend - p.low) DESC';
+  const order = sort === 'pct' ? `(p.low / ${value}) ASC` : `(${value} - p.low) DESC`;
   const rows = db.prepare(`
     SELECT pr.id, pr.name, pr.expansion_id, e.name AS set_name, e.code AS set_code, e.release_date, ${PRICE_COLS},
-      (p.trend - p.low) AS spread, 1 - p.low / p.trend AS discount,
+      ${value} AS sale_value, (${value} - p.low) AS spread, 1 - p.low / ${value} AS discount,
       (SELECT 1 FROM watchlist w WHERE w.id = pr.id) AS watched
     FROM prices p JOIN products pr ON pr.id = p.id LEFT JOIN expansions e ON e.id = pr.expansion_id
-    WHERE p.trend >= ? AND p.low > 0 AND p.low / p.trend <= ?
-      -- nur Karten mit echtem Umsatz (alle Durchschnitte vorhanden)
-      AND p.avg1 > 0 AND p.avg7 > 0 AND p.avg30 > 0 ${extra}
+    WHERE ${value} >= ? AND ${value} <= ? AND p.low > 0 AND p.low / ${value} <= ?
+      -- nur Karten mit echtem Umsatz (alle Durchschnitte vorhanden) und Trend, der nicht widerspricht
+      AND p.avg1 > 0 AND p.avg7 > 0 AND p.avg30 > 0 AND p.trend > p.low ${extra}
     ORDER BY ${order} LIMIT ?`).all(...args);
   return rows.map((r) => ({ ...r, watched: Boolean(r.watched), spark: sparkFor(db, r) }));
 }
@@ -94,7 +117,8 @@ export function portfolio(db) {
   const valueWithCost = costKnown.reduce((a, c) => a + (c.value ?? 0), 0);
 
   const history = db.prepare(`
-    SELECT h.day, SUM(w.qty * (CASE WHEN w.foil = 1 THEN h.trend_foil ELSE h.trend END)) AS value
+    SELECT h.day, SUM(w.qty * (CASE WHEN w.foil = 1 THEN COALESCE(h.avg7_foil, h.trend_foil)
+      ELSE COALESCE(h.avg7, h.trend) END)) AS value
     FROM watchlist w JOIN history h ON h.id = w.id
     WHERE w.qty > 0
     GROUP BY h.day ORDER BY h.day`).all();
