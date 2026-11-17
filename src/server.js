@@ -1,6 +1,7 @@
 // Kartenhain Preistracker: kleiner Webserver ohne Zusatzpakete.
 // Start: npm start  →  http://localhost:3000
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,6 +93,17 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
   return { handler, runUpdate };
 }
 
+/** Öffnet die Adresse im Standardbrowser (Windows, macOS, Linux). */
+export function openBrowser(url) {
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsVerbatimArguments: process.platform === 'win32' });
+    child.on('error', () => {});
+    child.unref();
+  } catch { /* kein Browser gefunden: Adresse steht in der Konsole */ }
+}
+
 function httpError(status, message) {
   const e = new Error(message);
   e.status = status;
@@ -127,8 +139,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   const app = createApp({ db, env });
   const port = Number(env.PORT ?? 3000);
-  http.createServer(app.handler).listen(port, () => {
-    console.log(`Kartenhain Preistracker läuft auf http://localhost:${port}${env.DEMO === '1' ? '  (DEMO-Daten)' : ''}`);
+  const url = `http://localhost:${port}`;
+  const server = http.createServer(app.handler);
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      // Läuft schon (z. B. zweimal gestartet): einfach den Browser öffnen.
+      console.log(`Der Preistracker läuft bereits auf ${url}.`);
+      if (process.argv.includes('--open')) openBrowser(url);
+      setTimeout(() => process.exit(0), 1500);
+      return;
+    }
+    throw e;
+  });
+  server.listen(port, () => {
+    console.log(`Kartenhain Preistracker läuft auf ${url}${env.DEMO === '1' ? '  (DEMO-Daten)' : ''}`);
+    console.log('Zum Beenden dieses Fenster schließen.');
+    if (process.argv.includes('--open')) openBrowser(url);
   });
 
   // Täglich neue Cardmarket-Preise holen (der Preisguide wird einmal am Tag erneuert).

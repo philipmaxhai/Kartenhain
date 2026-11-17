@@ -8,7 +8,22 @@ Preistracker für **Magic: The Gathering** mit Daten von **Cardmarket**. Gedacht
 - **5 günstigste Angebote** einer Karte mit **Verkäuferland** (Flagge + Name), Filter für Zustand und Sprache
 - **Merkliste** für Karten, die du beobachten willst
 
-## Schnellstart
+## Starten unter Windows (ohne Vorkenntnisse)
+
+1. Einmalig [Node.js](https://nodejs.org/de/download) installieren (Version „LTS“, einfach durchklicken).
+2. Im Kartenhain-Ordner **doppelklicken auf `Start.bat`**. Der Browser öffnet sich von selbst.
+3. Zum Beenden das schwarze Fenster schließen.
+
+`Demo starten.bat` zeigt das Tool mit erfundenen Preisen, ganz ohne Internet.
+
+Falls Windows beim ersten Doppelklick „Der Computer wurde durch Windows geschützt“ meldet:
+auf **Weitere Informationen → Trotzdem ausführen** klicken.
+
+**Neue Version holen:** auf GitHub *Code → Download ZIP*, die ZIP öffnen und den Inhalt **in den bisherigen
+Kartenhain-Ordner entpacken** (vorhandene Dateien ersetzen). So bleibt der gespeicherte Preisverlauf im
+Unterordner `data` erhalten.
+
+## Schnellstart (Kommandozeile)
 
 Voraussetzung: [Node.js](https://nodejs.org) ab Version 22.13. Es müssen keine Pakete installiert werden.
 
