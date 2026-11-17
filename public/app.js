@@ -28,8 +28,19 @@ async function loadStatus() {
     el.innerHTML = `${s.products.toLocaleString('de-DE')} Karten · Preise vom ${when ? new Date(when).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '?'} · ${s.historyDays} Tage Verlauf`
       + (s.demo ? '' : ' <button id="upd">Aktualisieren</button>');
   }
+  if (s.lastError && !s.updating) {
+    el.innerHTML = `<span class="err">Laden der Cardmarket-Preise fehlgeschlagen: ${esc(s.lastError)}</span> <button id="upd">Nochmal versuchen</button>`;
+  }
   $('#upd')?.addEventListener('click', runUpdate);
-  if (s.updating) setTimeout(loadStatus, 4000);
+  if (s.updating) {
+    state.wasUpdating = true;
+    setTimeout(loadStatus, 4000);
+  } else if (state.wasUpdating) {
+    // Update gerade fertig: aktuelle Ansicht mit den neuen Preisen neu laden
+    state.wasUpdating = false;
+    const tab = document.querySelector('.tabs [aria-selected="true"]')?.dataset.tab;
+    if (tab) showTab(tab);
+  }
 }
 
 async function runUpdate() {
@@ -120,14 +131,26 @@ async function loadMovers() {
   const days = $('#mv-days').value;
   const params = new URLSearchParams({ direction: mv.direction, days, minPrice: $('#mv-min').value, foil: $('#mv-foil').checked ? '1' : '0' });
   const r = await api(`/api/movers?${params}`);
+  const word = mv.direction === 'up' ? 'gestiegen' : 'gefallen';
   $('#mv-source').textContent = r.source === 'history'
-    ? `Veränderung des Trendpreises vom ${fmtDay(r.from)} bis ${fmtDay(r.to)} (eigener Verlauf).`
-    : `Noch zu wenig eigener Verlauf für ${days} Tage. Angezeigt wird der Cardmarket-Vergleich 7-Tage-Durchschnitt gegen 30-Tage-Durchschnitt.`;
-  const label = r.source === 'history' ? `Veränderung in ${days} Tagen` : '7-Tage-Ø gegen 30-Tage-Ø';
+    ? `Top ${r.rows.length}: Karten, deren Preis vom ${fmtDay(r.from)} bis ${fmtDay(r.to)} am stärksten ${word} ist.`
+    : `Top ${r.rows.length}: Karten, deren Durchschnittspreis der letzten 7 Tage am stärksten gegenüber dem 30-Tage-Durchschnitt ${word} ist (echte Verkaufspreise von Cardmarket).`;
+  const labels = r.source === 'history' ? [fmtDay(r.from), fmtDay(r.to)] : ['Ø 30 Tage', 'Ø 7 Tage'];
   box.innerHTML = r.rows.length
-    ? r.rows.map((c) => rowHtml(c, { change: c.change, changeLabel: label })).join('')
-    : '<div class="empty">Keine Karten für diese Filter.</div>';
+    ? r.rows.map((c, i) => moverHtml(c, i + 1, labels)).join('')
+    : `<div class="empty">${state.status?.products ? 'Keine Karten für diese Filter.' : 'Noch keine Preise geladen.'}</div>`;
   bindRows(box);
+}
+
+function moverHtml(c, rank, [fromLabel, toLabel]) {
+  const img = scryImg(c.id);
+  return `<div class="row mover" data-id="${c.id}">
+    ${img ? `<img loading="lazy" src="${img}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph'}))">` : '<div class="ph"></div>'}
+    <div><div class="name"><span class="rank">${rank}.</span> ${esc(c.name)}</div>
+      <div class="sub">${fromLabel}: <b>${eur(c.then_price)}</b> → ${toLabel}: <b>${eur(c.now_price)}</b> · Trend ${eur($('#mv-foil').checked ? c.trend_foil : c.trend)}</div></div>
+    <div class="chg big ${dir(c.change)}">${arrow(c.change)} ${pct(c.change)}</div>
+    <button class="star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
+  </div>`;
 }
 
 // ---------------------------------------------------------------- Merkliste

@@ -20,7 +20,12 @@ export function today() {
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': 'Kartenhain-Preistracker/1.0' } });
+  let res;
+  try {
+    res = await fetch(url, { headers: { 'User-Agent': 'Kartenhain-Preistracker/1.0' } });
+  } catch (e) {
+    throw new Error(`Keine Verbindung zu Cardmarket (${e.cause?.code || e.message}). Bitte Internetverbindung prüfen.`);
+  }
   if (!res.ok) throw new Error(`Download fehlgeschlagen (${res.status}) für ${url}`);
   return res.json();
 }
