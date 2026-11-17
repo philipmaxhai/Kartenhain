@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { openDb } from '../src/db.js';
-import { importPriceData, cheapest, oauthHeader, hasApiCredentials } from '../src/cardmarket.js';
+import { importPriceData, importSets, cheapest, oauthHeader, hasApiCredentials } from '../src/cardmarket.js';
 import { searchCards, getCard, topMovers, setWatched, getWatchlist, historyChange } from '../src/trends.js';
 import { countryInfo } from '../src/countries.js';
 import { createApp } from '../src/server.js';
@@ -21,7 +21,7 @@ const guide = (day, ring, bolt) => ({
   version: 1,
   createdAt: `${day}T02:00:00+0100`,
   priceGuides: [
-    { idProduct: 1, avg: 2, low: 1.1, trend: bolt, avg1: 2, avg7: 2.5, avg30: 2, 'trend-foil': 5, 'avg7-foil': 4, 'avg30-foil': 5 },
+    { idProduct: 1, avg: 2, low: 1.1, trend: bolt, avg1: 2, avg7: 2.5, avg30: 2, 'trend-foil': 4.5, 'avg7-foil': 4, 'avg30-foil': 5 },
     { idProduct: 2, avg: 1, low: 0.5, trend: 1, avg1: 1, avg7: 1, avg30: 1.25 },
     { idProduct: 3, avg: 60, low: 50, trend: ring, avg1: 60, avg7: 55, avg30: 70 },
     { idProduct: 4, avg: 0.05, low: 0.02, trend: 0.04, avg1: 0.05, avg7: 0.06, avg30: 0.03 },
@@ -53,17 +53,20 @@ test('Merkliste-Karten bekommen immer Verlauf', () => {
 test('Suche findet Namen, exakte Treffer zuerst', () => {
   const db = freshDb();
   importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
-  const rows = searchCards(db, 'bolt');
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].id, 1); // teurere Version zuerst
-  assert.equal(searchCards(db, 'one ring')[0].id, 3);
+  const groups = searchCards(db, 'bolt');
+  assert.equal(groups.length, 1); // eine Karte ...
+  assert.equal(groups[0].count, 2); // ... in zwei Versionen
+  assert.deepEqual(groups[0].versions.map((v) => v.id), [2, 1]); // günstigste zuerst
+  assert.equal(groups[0].minTrend, 1);
+  assert.equal(groups[0].maxTrend, 2);
+  assert.equal(searchCards(db, 'one ring')[0].versions[0].id, 3);
   assert.deepEqual(searchCards(db, 'x'), []);
   assert.deepEqual(searchCards(db, '%%'), []);
 });
 
 test('Trends aus dem Preisguide, solange kein eigener Verlauf da ist', () => {
   const db = freshDb();
-  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
   const up = topMovers(db, { direction: 'up', minPrice: 1 });
   assert.equal(up.source, 'guide');
   assert.deepEqual(up.rows.map((r) => r.id), [1]); // 2,5 vs 2,0 = +25 %
@@ -72,6 +75,13 @@ test('Trends aus dem Preisguide, solange kein eigener Verlauf da ist', () => {
   assert.deepEqual(down.rows.map((r) => r.id), [3, 2]); // −21 %, −20 %
   const foil = topMovers(db, { direction: 'down', minPrice: 1, foil: true });
   assert.deepEqual(foil.rows.map((r) => r.id), [1]);
+});
+
+test('Ausreißer ohne passenden Trendpreis werden ignoriert', () => {
+  const db = freshDb();
+  // Karte 1: Ø 7 Tage über Ø 30 Tage, aber Trendpreis (2,0) nicht -> kein echter Anstieg
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  assert.deepEqual(topMovers(db, { direction: 'up', minPrice: 1 }).rows, []);
 });
 
 test('Trends aus eigenem Verlauf, sobald genug Tage gespeichert sind', () => {
@@ -92,6 +102,21 @@ test('Trends aus eigenem Verlauf, sobald genug Tage gespeichert sind', () => {
   assert.equal(card.history.length, 3);
   assert.ok(Math.abs(card.historyChange.d7 - 0.25) < 1e-9);
   assert.equal(card.historyChange.d30, null); // Verlauf deckt 30 Tage nicht ab
+});
+
+test('Editionsnamen aus MTGJSON werden den Karten zugeordnet', () => {
+  const db = freshDb();
+  importSets(db, { data: [
+    { code: 'M11', name: 'Magic 2011', mcmId: 10, mcmName: 'Magic 2011' },
+    { code: 'LEA', name: 'Limited Edition Alpha', mcmId: 11, mcmIdExtras: 99, releaseDate: '1993-08-05' },
+  ] });
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  const v = searchCards(db, 'bolt')[0].versions;
+  assert.equal(v[0].set_name, 'Limited Edition Alpha');
+  assert.equal(v[0].release_date, '1993-08-05');
+  assert.equal(v[1].set_name, 'Magic 2011');
+  assert.equal(getCard(db, 1).set_code, 'M11');
+  assert.equal(db.prepare('SELECT name FROM expansions WHERE id = 99').get().name, 'Limited Edition Alpha: Extras');
 });
 
 test('historyChange braucht genug Abdeckung', () => {
@@ -148,7 +173,7 @@ test('HTTP-API: Suche, Karte, Merkliste, Angebote', async () => {
   };
   await withServer(createApp({ db, env, fetchOffers }), async (base) => {
     const get = (p) => fetch(base + p).then((r) => r.json());
-    assert.equal((await get('/api/search?q=ring'))[0].id, 3);
+    assert.equal((await get('/api/search?q=ring'))[0].versions[0].id, 3);
     assert.equal((await get('/api/card/3')).name, 'The One Ring');
     assert.equal((await fetch(base + '/api/card/999')).status, 404);
     await fetch(base + '/api/watchlist/3', { method: 'POST' });

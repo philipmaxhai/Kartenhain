@@ -11,6 +11,8 @@ export const PRICE_GUIDE_URL =
   'https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_1.json';
 export const CATALOG_URL =
   'https://downloads.s3.cardmarket.com/productCatalog/productList/products_singles_1.json';
+// MTGJSON verknüpft Cardmarket-Editions-IDs (mcmId) mit Editionsnamen.
+export const SETLIST_URL = 'https://mtgjson.com/api/v5/SetList.json';
 export const API_BASE = 'https://api.cardmarket.com/ws/v2.0/output.json';
 
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
@@ -20,15 +22,40 @@ export function today() {
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': 'Kartenhain-Preistracker/1.0' } });
+  let res;
+  try {
+    res = await fetch(url, { headers: { 'User-Agent': 'Kartenhain-Preistracker/1.0' } });
+  } catch (e) {
+    throw new Error(`Keine Verbindung zu Cardmarket (${e.cause?.code || e.message}). Bitte Internetverbindung prüfen.`);
+  }
   if (!res.ok) throw new Error(`Download fehlgeschlagen (${res.status}) für ${url}`);
   return res.json();
 }
 
 /** Lädt Katalog + Preisguide von Cardmarket und speichert sie. */
 export async function downloadAndImport(db, opts = {}) {
-  const [catalog, priceGuide] = await Promise.all([fetchJson(CATALOG_URL), fetchJson(PRICE_GUIDE_URL)]);
+  const [catalog, priceGuide, setList] = await Promise.all([
+    fetchJson(CATALOG_URL),
+    fetchJson(PRICE_GUIDE_URL),
+    // Editionsnamen sind nur Komfort: wenn MTGJSON nicht erreichbar ist, trotzdem weitermachen
+    fetchJson(SETLIST_URL).catch((e) => { console.warn('Editionsnamen nicht geladen:', e.message); return null; }),
+  ]);
+  if (setList) importSets(db, setList);
   return importPriceData(db, { catalog, priceGuide, ...opts });
+}
+
+/** Speichert Editionsnamen aus MTGJSON SetList.json (data[].mcmId / mcmIdExtras). */
+export function importSets(db, setList) {
+  const sets = setList?.data ?? [];
+  const ins = db.prepare('INSERT OR REPLACE INTO expansions (id, name, code, release_date) VALUES (?, ?, ?, ?)');
+  let n = 0;
+  tx(db, () => {
+    for (const s of sets) {
+      if (s.mcmId) { ins.run(Number(s.mcmId), s.mcmName || s.name, s.code ?? null, s.releaseDate ?? null); n++; }
+      if (s.mcmIdExtras) { ins.run(Number(s.mcmIdExtras), `${s.mcmName || s.name}: Extras`, s.code ?? null, s.releaseDate ?? null); n++; }
+    }
+  });
+  return n;
 }
 
 /**

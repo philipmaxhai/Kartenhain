@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, getMeta } from './db.js';
+import { openDb, getMeta, setMeta } from './db.js';
 import { downloadAndImport, fetchCheapestOffers, hasApiCredentials, cheapest } from './cardmarket.js';
 import { searchCards, getCard, topMovers, getWatchlist, setWatched } from './trends.js';
 import { seedDemo, demoArticles } from './demo.js';
@@ -23,6 +23,8 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
     if (demo()) return { skipped: 'Demo-Modus: keine echten Daten geladen.' };
     if (!updating) {
       updating = download(db, { historyMinTrend: Number(env.HISTORY_MIN_TREND ?? 0.5) })
+        .then((r) => { setMeta(db, 'lastError', ''); return r; })
+        .catch((e) => { setMeta(db, 'lastError', e.message); throw e; })
         .finally(() => { updating = null; });
     }
     return updating;
@@ -37,6 +39,7 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
       products: db.prepare('SELECT COUNT(*) AS n FROM products').get().n,
       historyDays: db.prepare('SELECT COUNT(DISTINCT day) AS n FROM history').get().n,
       updating: Boolean(updating),
+      lastError: getMeta(db, 'lastError') || null,
     })],
     ['GET', /^\/api\/search$/, (m, q) => searchCards(db, q.get('q'))],
     ['GET', /^\/api\/card\/(\d+)$/, (m) => getCard(db, m[1]) ?? httpError(404, 'Karte nicht gefunden')],
@@ -66,7 +69,7 @@ export function createApp({ db, env = process.env, fetchOffers = fetchCheapestOf
       minPrice: Number(q.get('minPrice') ?? 2),
       days: Number(q.get('days') ?? 7),
       foil: q.get('foil') === '1',
-      limit: Number(q.get('limit') ?? 25),
+      limit: Number(q.get('limit') ?? 100),
     })],
     ['GET', /^\/api\/watchlist$/, () => getWatchlist(db)],
     ['POST', /^\/api\/watchlist\/(\d+)$/, (m) => { setWatched(db, m[1], true); return { ok: true }; }],
@@ -160,7 +163,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   // Täglich neue Cardmarket-Preise holen (der Preisguide wird einmal am Tag erneuert).
   const maybeUpdate = async () => {
     const last = getMeta(db, 'lastUpdate');
-    if (last && Date.now() - new Date(last).getTime() < 20 * 3600 * 1000) return;
+    const noSets = db.prepare('SELECT COUNT(*) AS n FROM expansions').get().n === 0; // nach Update auf neue Version
+    if (last && !noSets && Date.now() - new Date(last).getTime() < 20 * 3600 * 1000) return;
     try {
       console.log('Lade aktuelle Cardmarket-Preise …');
       const r = await app.runUpdate();

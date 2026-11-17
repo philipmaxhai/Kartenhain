@@ -28,8 +28,19 @@ async function loadStatus() {
     el.innerHTML = `${s.products.toLocaleString('de-DE')} Karten · Preise vom ${when ? new Date(when).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '?'} · ${s.historyDays} Tage Verlauf`
       + (s.demo ? '' : ' <button id="upd">Aktualisieren</button>');
   }
+  if (s.lastError && !s.updating) {
+    el.innerHTML = `<span class="err">Laden der Cardmarket-Preise fehlgeschlagen: ${esc(s.lastError)}</span> <button id="upd">Nochmal versuchen</button>`;
+  }
   $('#upd')?.addEventListener('click', runUpdate);
-  if (s.updating) setTimeout(loadStatus, 4000);
+  if (s.updating) {
+    state.wasUpdating = true;
+    setTimeout(loadStatus, 4000);
+  } else if (state.wasUpdating) {
+    // Update gerade fertig: aktuelle Ansicht mit den neuen Preisen neu laden
+    state.wasUpdating = false;
+    const tab = document.querySelector('.tabs [aria-selected="true"]')?.dataset.tab;
+    if (tab) showTab(tab);
+  }
 }
 
 async function runUpdate() {
@@ -61,19 +72,25 @@ function scryImg(id) {
   return state.status?.demo ? null : `https://api.scryfall.com/cards/cardmarket/${id}?format=image&version=small`;
 }
 
-function rowHtml(c, { change, changeLabel } = {}) {
+function setLabel(c) {
+  if (c.set_name) return `${esc(c.set_name)}${c.set_code ? ` (${esc(c.set_code)})` : ''}${c.release_date ? ` · ${c.release_date.slice(0, 4)}` : ''}`;
+  return c.expansion_id ? `Edition #${c.expansion_id}` : 'Edition unbekannt';
+}
+
+function rowHtml(c, { change, changeLabel, showName = true } = {}) {
   const img = scryImg(c.id);
   const chg = change !== undefined ? change : c.guideTrend?.change7v30;
   return `<div class="row" data-id="${c.id}">
     ${img ? `<img loading="lazy" src="${img}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph'}))">` : '<div class="ph"></div>'}
-    <div><div class="name">${esc(c.name)}</div><div class="sub">Cardmarket #${c.id}${c.expansion_id ? ` · Edition ${c.expansion_id}` : ''}</div></div>
-    <div class="price">${eur(state.foil && c.trend_foil ? c.trend_foil : c.trend)}<small>ab ${eur(c.low)}</small></div>
+    <div>${showName ? `<div class="name">${esc(c.name)}</div><div class="sub">${setLabel(c)}</div>` : `<div class="name set">${setLabel(c)}</div>`}</div>
+    <div class="price" title="Preis-Trend = typischer Verkaufspreis laut Cardmarket">${eur(state.foil && c.trend_foil ? c.trend_foil : c.trend)}<small>ab ${eur(c.low)}</small></div>
     <div class="chg chg-col ${dir(chg)}" title="${esc(changeLabel || '7-Tage-Ø gegen 30-Tage-Ø')}">${arrow(chg)} ${pct(chg)}</div>
     <button class="star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
   </div>`;
 }
 
 function bindRows(container) {
+  container.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', () => openCard(Number(el.dataset.open))));
   container.querySelectorAll('.row').forEach((r) => r.addEventListener('click', (e) => {
     const star = e.target.closest('[data-star]');
     if (star) {
@@ -98,10 +115,60 @@ $('#search-form').addEventListener('submit', async (e) => {
   const q = $('#q').value.trim();
   const box = $('#search-results');
   box.innerHTML = '<div class="empty">Suche …</div>';
-  const rows = await api(`/api/search?q=${encodeURIComponent(q)}`);
-  box.innerHTML = rows.length ? rows.map((c) => rowHtml(c)).join('') : `<div class="empty">Nichts gefunden für „${esc(q)}“.</div>`;
+  const groups = await api(`/api/search?q=${encodeURIComponent(q)}`);
+  box.innerHTML = groups.length ? groups.map(groupHtml).join('') : `<div class="empty">Nichts gefunden für „${esc(q)}“.</div>`;
+  box.querySelectorAll('[data-more]').forEach((b) => b.addEventListener('click', () => {
+    const list = b.previousElementSibling;
+    list.classList.toggle('collapsed');
+    b.textContent = list.classList.contains('collapsed') ? b.dataset.more : 'Weniger anzeigen';
+  }));
   bindRows(box);
 });
+
+/** Eine Karte mit all ihren Versionen: günstigste und teuerste im Verhältnis. */
+function groupHtml(g) {
+  const priced = g.versions.filter((v) => v.trend != null);
+  const cheap = priced[0];
+  const dear = priced[priced.length - 1];
+  const median = priced.length ? priced[Math.floor((priced.length - 1) / 2)].trend : null;
+  const factor = cheap && dear && cheap.trend > 0 ? dear.trend / cheap.trend : null;
+  const pick = (label, v, cls) => v ? `<div class="pick ${cls}" data-open="${v.id}">
+      <div class="pick-label">${label}</div>
+      <div class="pick-price">${eur(v.trend)}</div>
+      <div class="pick-set">${setLabel(v)}</div></div>` : '';
+  const many = g.versions.length > 1;
+  return `<div class="group">
+    <div class="group-head">
+      <h3>${esc(g.name)}</h3>
+      <span class="muted">${g.count} ${g.count === 1 ? 'Version' : 'Versionen'}${many && median != null ? ` · typisch ${eur(median)}` : ''}</span>
+    </div>
+    ${many && cheap && dear && cheap !== dear ? `
+      <div class="picks">
+        ${pick('Günstigste Version', cheap, 'cheap')}
+        <div class="ratio" title="So viel teurer ist die teuerste Version">
+          <div class="ratio-num">${factor >= 1.05 ? `${factor.toLocaleString('de-DE', { maximumFractionDigits: factor < 10 ? 1 : 0 })}×` : '≈'}</div>
+          <div class="ratio-txt">so teuer wie<br>die günstigste</div>
+        </div>
+        ${pick('Teuerste Version', dear, 'dear')}
+      </div>
+      ${spreadHtml(priced, cheap.trend, dear.trend)}` : ''}
+    <div class="list versions ${g.versions.length > 4 ? 'collapsed' : ''}">
+      ${g.versions.map((v) => rowHtml(v, { showName: false })).join('')}
+    </div>
+    ${g.versions.length > 4 ? `<button class="more ghost" data-more="Alle ${g.count} Versionen anzeigen">Alle ${g.count} Versionen anzeigen</button>` : ''}
+  </div>`;
+}
+
+/** Punktleiste (logarithmisch): wo liegen die Versionen zwischen günstig und teuer? */
+function spreadHtml(priced, lo, hi) {
+  if (!(lo > 0) || hi / lo < 1.05) return '';
+  const pos = (v) => (Math.log(v / lo) / Math.log(hi / lo)) * 100;
+  return `<div class="spread" aria-hidden="true">
+    <div class="spread-line"></div>
+    ${priced.map((v) => `<span class="spread-dot" style="left:${pos(v.trend).toFixed(1)}%" title="${esc(v.set_name || '')}: ${eur(v.trend)}"></span>`).join('')}
+  </div>
+  <div class="spread-axis"><span>${eur(lo)}</span><span>Preise aller Versionen (logarithmisch)</span><span>${eur(hi)}</span></div>`;
+}
 
 // ---------------------------------------------------------------- Trends
 const mv = { direction: 'up' };
@@ -120,14 +187,27 @@ async function loadMovers() {
   const days = $('#mv-days').value;
   const params = new URLSearchParams({ direction: mv.direction, days, minPrice: $('#mv-min').value, foil: $('#mv-foil').checked ? '1' : '0' });
   const r = await api(`/api/movers?${params}`);
+  const word = mv.direction === 'up' ? 'gestiegen' : 'gefallen';
   $('#mv-source').textContent = r.source === 'history'
-    ? `Veränderung des Trendpreises vom ${fmtDay(r.from)} bis ${fmtDay(r.to)} (eigener Verlauf).`
-    : `Noch zu wenig eigener Verlauf für ${days} Tage. Angezeigt wird der Cardmarket-Vergleich 7-Tage-Durchschnitt gegen 30-Tage-Durchschnitt.`;
-  const label = r.source === 'history' ? `Veränderung in ${days} Tagen` : '7-Tage-Ø gegen 30-Tage-Ø';
+    ? `Top ${r.rows.length}: Karten, deren Preis vom ${fmtDay(r.from)} bis ${fmtDay(r.to)} am stärksten ${word} ist.`
+    : `Top ${r.rows.length}: Karten, deren Durchschnittspreis der letzten 7 Tage am stärksten gegenüber dem 30-Tage-Durchschnitt ${word} ist (echte Verkaufspreise von Cardmarket).`;
+  const labels = r.source === 'history' ? [fmtDay(r.from), fmtDay(r.to)] : ['Ø 30 Tage', 'Ø 7 Tage'];
   box.innerHTML = r.rows.length
-    ? r.rows.map((c) => rowHtml(c, { change: c.change, changeLabel: label })).join('')
-    : '<div class="empty">Keine Karten für diese Filter.</div>';
+    ? r.rows.map((c, i) => moverHtml(c, i + 1, labels)).join('')
+    : `<div class="empty">${state.status?.products ? 'Keine Karten für diese Filter.' : 'Noch keine Preise geladen.'}</div>`;
   bindRows(box);
+}
+
+function moverHtml(c, rank, [fromLabel, toLabel]) {
+  const img = scryImg(c.id);
+  return `<div class="row mover" data-id="${c.id}">
+    ${img ? `<img loading="lazy" src="${img}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph'}))">` : '<div class="ph"></div>'}
+    <div><div class="name"><span class="rank">${rank}.</span> ${esc(c.name)}</div>
+      <div class="sub">${setLabel(c)}</div>
+      <div class="sub">${fromLabel}: <b>${eur(c.then_price)}</b> → ${toLabel}: <b>${eur(c.now_price)}</b> · Preis-Trend ${eur($('#mv-foil').checked ? c.trend_foil : c.trend)}</div></div>
+    <div class="chg big ${dir(c.change)}">${arrow(c.change)} ${pct(c.change)}</div>
+    <button class="star ${c.watched ? 'on' : ''}" data-star="${c.id}" aria-label="Merken">${c.watched ? '★' : '☆'}</button>
+  </div>`;
 }
 
 // ---------------------------------------------------------------- Merkliste
@@ -174,7 +254,7 @@ async function openCard(id) {
 async function loadScryfall(id) {
   const img = $('#d-img');
   img.hidden = true;
-  $('#d-set').textContent = state.card.expansion_id ? `Edition ${state.card.expansion_id}` : '';
+  $('#d-set').innerHTML = setLabel(state.card);
   if (state.status?.demo) return;
   try {
     let s = state.scry.get(id);
@@ -206,8 +286,8 @@ function renderCard() {
   const tile = (label, value, delta, deltaLabel) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>`
     + (delta !== undefined ? `<div class="delta ${dir(delta)}">${arrow(delta)} ${pct(delta)} <span class="muted">${deltaLabel}</span></div>` : '') + '</div>';
   $('#d-tiles').innerHTML = [
-    tile('Trendpreis', eur(c['trend' + f]), g?.change7v30, '7T-Ø vs. 30T-Ø'),
-    tile('Ab-Preis (günstigster)', eur(c['low' + f])),
+    tile('Preis-Trend <span class="info" title="Typischer Verkaufspreis laut Cardmarket (geglätteter Durchschnitt der letzten Verkäufe). Gleicher Wert wie „Preis-Trend“ auf der Cardmarket-Kartenseite.">ⓘ</span>', eur(c['trend' + f]), g?.change7v30, '7T-Ø vs. 30T-Ø'),
+    tile('Günstigstes Angebot <span class="info" title="Billigstes Angebot auf Cardmarket, egal welcher Zustand und welche Sprache.">ⓘ</span>', eur(c['low' + f])),
     tile('Ø 1 Tag', eur(c['avg1' + f]), g?.change1v7, 'vs. 7T-Ø'),
     tile('Ø 7 Tage', eur(c['avg7' + f])),
     tile('Ø 30 Tage', eur(c['avg30' + f])),
@@ -231,8 +311,8 @@ function renderChart() {
     }
   }
   const series = state.foil
-    ? [{ key: 'trend_foil', name: 'Trendpreis Foil', color: 'var(--series-1)' }]
-    : [{ key: 'trend', name: 'Trendpreis', color: 'var(--series-1)' }, { key: 'low', name: 'Ab-Preis', color: 'var(--series-2)' }];
+    ? [{ key: 'trend_foil', name: 'Preis-Trend Foil', color: 'var(--series-1)' }]
+    : [{ key: 'trend', name: 'Preis-Trend', color: 'var(--series-1)' }, { key: 'low', name: 'Ab-Preis', color: 'var(--series-2)' }];
   const usable = series.filter((s) => hist.some((h) => h[s.key] != null));
 
   $('#d-legend').innerHTML = usable.length > 1 ? usable.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('') : '';
