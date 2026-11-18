@@ -23,7 +23,7 @@ const guide = (day, ring, bolt) => ({
   priceGuides: [
     { idProduct: 1, avg: 2, low: 1.1, trend: bolt, avg1: 2, avg7: 2.5, avg30: 2, 'trend-foil': 4.5, 'avg7-foil': 4, 'avg30-foil': 5 },
     { idProduct: 2, avg: 1, low: 0.5, trend: 1, avg1: 1, avg7: 1, avg30: 1.25 },
-    { idProduct: 3, avg: 60, low: 50, trend: ring, avg1: 60, avg7: 55, avg30: 70 },
+    { idProduct: 3, avg: 60, low: 50, trend: ring, avg1: 60, avg7: ring - 5, avg30: 70 },
     { idProduct: 4, avg: 0.05, low: 0.02, trend: 0.04, avg1: 0.05, avg7: 0.06, avg30: 0.03 },
   ],
 });
@@ -37,7 +37,7 @@ test('Import speichert Karten, Preise und Verlauf (ohne Billigkarten)', () => {
   const r = importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2), day: '2026-11-01' });
   assert.equal(r.products, 4);
   assert.equal(r.prices, 4);
-  assert.equal(r.history, 3); // Karte 4 liegt unter 0,50 €
+  assert.equal(r.history, 3); // Karte 4 liegt unter 0,10 €
   assert.equal(db.prepare('SELECT trend FROM prices WHERE id = 3').get().trend, 60);
 });
 
@@ -57,8 +57,11 @@ test('Suche findet Namen, exakte Treffer zuerst', () => {
   assert.equal(groups.length, 1); // eine Karte ...
   assert.equal(groups[0].count, 2); // ... in zwei Versionen
   assert.deepEqual(groups[0].versions.map((v) => v.id), [2, 1]); // günstigste zuerst
-  assert.equal(groups[0].minTrend, 1);
-  assert.equal(groups[0].maxTrend, 2);
+  // Verkaufswert = Ø 7 Tage: Bolt 2 = 1 €, Bolt 1 = 2,50 €
+  assert.equal(groups[0].minSale, 1);
+  assert.equal(groups[0].maxSale, 2.5);
+  assert.equal(groups[0].versions[1].sale_value, 2.5);
+  assert.equal(groups[0].versions[1].sale_value_foil, 4);
   assert.equal(searchCards(db, 'one ring')[0].versions[0].id, 3);
   assert.deepEqual(searchCards(db, 'x'), []);
   assert.deepEqual(searchCards(db, '%%'), []);
@@ -238,6 +241,8 @@ test('Übersicht: Marktstimmung und Verteilung', () => {
   importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
   const d = dashboard(db, { minPrice: 1 });
   assert.equal(d.cards, 3);
+  assert.equal(dashboard(db, { minPrice: 0, maxPrice: 1 }).cards, 2); // nur günstige Karten
+  assert.deepEqual(dashboard(db, { minPrice: 0, maxPrice: 3 }).mostValuable.map((r) => r.id), [1, 2, 4]);
   assert.equal(d.up, 1);
   assert.equal(d.down, 2);
   assert.equal(d.histogram.reduce((a, b) => a + b.count, 0), 3);
@@ -250,13 +255,18 @@ test('Übersicht: Marktstimmung und Verteilung', () => {
   assert.equal(h[19].count, 1);
 });
 
-test('Schnäppchen: günstigstes Angebot weit unter Preis-Trend', () => {
+test('Schnäppchen: günstigstes Angebot weit unter dem Verkaufswert (Ø 7 Tage)', () => {
   const db = freshDb();
   importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
-  // One Ring: ab 50 € bei Trend 60 € -> nur 17 % günstiger; Bolt 1: 1,10 bei 2,40 €; Bolt 2: 0,50 bei 1 €
-  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.7 }).map((r) => r.id), [1, 2]);
-  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.9 }).map((r) => r.id), [3, 1, 2]); // nach € sortiert
-  assert.deepEqual(deals(db, { minPrice: 0.5, maxRatio: 0.9, sort: 'pct' }).map((r) => r.id), [1, 2, 3]);
+  // Verkaufswert = Ø 7 Tage. Bolt 1: ab 1,10 bei 2,50 €; Bolt 2: ab 0,50 bei 1 €; One Ring: ab 50 bei 55 €
+  const ids = (o) => deals(db, { minPrice: 0.5, ...o }).map((r) => r.id);
+  assert.deepEqual(ids({ maxRatio: 0.7 }), [1, 2]);
+  assert.deepEqual(ids({ maxRatio: 0.95 }), [3, 1, 2]); // nach € sortiert
+  assert.deepEqual(ids({ maxRatio: 0.95, sort: 'pct' }), [1, 2, 3]);
+  assert.deepEqual(ids({ maxRatio: 0.95, maxPrice: 2 }), [2]); // Preisbereich bis 2 €
+  const d = deals(db, { minPrice: 0.5, maxRatio: 0.7 })[0];
+  assert.equal(d.sale_value, 2.5);
+  assert.ok(Math.abs(d.spread - 1.4) < 1e-9);
 });
 
 test('Meine Karten: Menge, Einkaufspreis, Gewinn, Alarme, Wertverlauf', () => {
@@ -268,11 +278,12 @@ test('Meine Karten: Menge, Einkaufspreis, Gewinn, Alarme, Wertverlauf', () => {
   const p = portfolio(db);
   assert.equal(p.owned, 2);
   assert.equal(p.copies, 6);
-  assert.equal(p.value, 2 * 66 + 4 * 2);
+  // Wert = echter Verkaufswert (Ø 7 Tage): One Ring 61 €, Bolt 2,50 €
+  assert.equal(p.value, 2 * 61 + 4 * 2.5);
   assert.equal(p.cost, 100);
-  assert.equal(p.profit, 2 * 66 - 100); // nur Karten mit Einkaufspreis zählen zum Gewinn
+  assert.equal(p.profit, 2 * 61 - 100); // nur Karten mit Einkaufspreis zählen zum Gewinn
   assert.deepEqual(p.alerts.map((a) => [a.id, a.alert]), [[3, 'above']]);
-  assert.deepEqual(p.history.map((h) => h.value), [2 * 60 + 4 * 2, 2 * 66 + 4 * 2]);
+  assert.deepEqual(p.history.map((h) => h.value), [2 * 55 + 4 * 2.5, 2 * 61 + 4 * 2.5]);
   // Feld leeren
   updateWatch(db, 3, { alert_above: '' });
   assert.equal(portfolio(db).alerts.length, 0);
@@ -295,9 +306,282 @@ test('HTTP-API: Übersicht, Schnäppchen, Bestand speichern', async () => {
     assert.equal(put.status, 200);
     const w = await fetch(base + '/api/watchlist').then((r) => r.json());
     assert.equal(w[0].qty, 3);
-    assert.equal(w[0].profit, 3 * 60 - 120);
+    assert.equal(w[0].profit, 3 * 55 - 120); // Verkaufswert 55 €
     assert.equal((await fetch(base + '/api/watchlist/3', { method: 'PUT', body: '{kaputt' })).status, 400);
     const mv = await fetch(base + '/api/movers?direction=down&minPrice=1&maxPrice=10').then((r) => r.json());
     assert.deepEqual(mv.rows.map((r) => r.id), [2]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Echter Verkaufswert, fehlende Werte, Version
+// ---------------------------------------------------------------------------
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { saleValue, saleSql } from '../src/trends.js';
+import { feePercent, readVersion } from '../src/server.js';
+
+test('0 im Preisguide heißt "kein Wert", reine Foil-Karten werden erkannt', () => {
+  const db = freshDb();
+  importPriceData(db, {
+    catalog: { products: [
+      { idProduct: 7, name: 'Foil Promo', idExpansion: 12 },
+      { idProduct: 8, name: 'Foil Promo', idExpansion: 11 },
+    ] },
+    priceGuide: { createdAt: '2026-11-10T01:48:00+0100', priceGuides: [
+      // nur Foil: normale Werte stehen auf 0
+      { idProduct: 7, avg: 0, low: 0, trend: 0, avg1: 0, avg7: 0, avg30: 0, 'low-foil': 3, 'trend-foil': 4, 'avg7-foil': 4.5, 'avg30-foil': 4 },
+      // normale Version ohne Foil und ohne Verkäufe in den letzten 7 Tagen
+      { idProduct: 8, avg: 1, low: 0.8, trend: 1.2, avg1: 0, avg7: 0, avg30: 1.1, 'trend-foil': 0, 'avg7-foil': 0 },
+    ] },
+  });
+  const p7 = db.prepare('SELECT * FROM prices WHERE id = 7').get();
+  assert.equal(p7.trend, null);
+  assert.equal(p7.trend_foil, 4);
+  const [g] = searchCards(db, 'foil promo');
+  const [v8, v7] = g.versions; // 1,20 € (Trend, weil keine Verkäufe) vor 4,50 € (Foil)
+  assert.equal(v8.id, 8);
+  assert.equal(v8.sale_value, 1.2);
+  assert.equal(v8.sale_value_foil, null);
+  assert.equal(v8.foil_only, false);
+  assert.equal(v7.foil_only, true);
+  assert.equal(v7.price_value, 4.5);
+  assert.equal(g.maxSale, 4.5);
+  // Verlaufstag = Erstellungstag der Preisliste
+  assert.equal(db.prepare('SELECT day FROM history WHERE id = 8').get().day, '2026-11-10');
+});
+
+test('Verkaufswert: Ø 7 Tage, sonst Preis-Trend, sonst Ø 30 Tage (JS und SQL gleich)', () => {
+  const cases = [
+    [{ avg7: 2, trend: 3, avg30: 4 }, 2],
+    [{ avg7: null, trend: 3, avg30: 4 }, 3],
+    [{ avg7: 0, trend: 0, avg30: 4 }, 4],
+    [{ avg7: null, trend: null, avg30: null }, null],
+  ];
+  const db = freshDb();
+  for (const [p, want] of cases) {
+    assert.equal(saleValue(p), want);
+    const got = db.prepare(`SELECT ${saleSql()} AS v FROM (SELECT ? AS avg7, ? AS trend, ? AS avg30) p`).get(p.avg7, p.trend, p.avg30).v;
+    assert.equal(got, want);
+  }
+  assert.equal(saleValue({ avg7_foil: 9, trend_foil: 8 }, true), 9);
+});
+
+test('Alte Datenbank: Nullen werden beim Start einmalig zu "kein Wert"', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kh-'));
+  const file = path.join(dir, 'alt.sqlite');
+  let db = openDb(file);
+  db.exec("INSERT INTO prices (id, trend, trend_foil, low) VALUES (1, 2.5, 0, 0); INSERT INTO history (id, day, trend, trend_foil) VALUES (1, '2026-11-01', 2.5, 0); DELETE FROM meta WHERE key = 'zeroIsMissing';");
+  db.close();
+  db = openDb(file);
+  assert.deepEqual({ ...db.prepare('SELECT trend, trend_foil, low FROM prices WHERE id = 1').get() }, { trend: 2.5, trend_foil: null, low: null });
+  assert.equal(db.prepare('SELECT trend_foil FROM history WHERE id = 1').get().trend_foil, null);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Trends und Übersicht: Preisbereich gilt für den Verkaufswert', () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2.4) });
+  // Bolt 1: Verkaufswert (Ø 7 Tage) 2,50 €, Preis-Trend 2,40 €
+  const up = (o) => topMovers(db, { direction: 'up', ...o }).rows.map((r) => r.id);
+  assert.deepEqual(up({ minPrice: 2.45 }), [1]);
+  assert.deepEqual(up({ minPrice: 0.1, maxPrice: 2.45 }), []);
+  assert.equal(topMovers(db, { direction: 'up' }).rows[0].sale_value, 2.5);
+  // Ausreißer: ein Fehlkauf treibt den Ø 7 Tage auf das 10-Fache des Trends -> nicht "wertvollste Karte"
+  db.prepare('UPDATE prices SET avg7 = 900 WHERE id = 4').run();
+  assert.ok(!dashboard(db, { minPrice: 0 }).mostValuable.some((r) => r.id === 4));
+  assert.equal(dashboard(db, { minPrice: 0 }).mostValuable[0].sale_value, 55);
+});
+
+test('Gebühr und Version', () => {
+  assert.equal(feePercent({}), 5);
+  assert.equal(feePercent({ CARDMARKET_FEE_PERCENT: '' }), 5);
+  assert.equal(feePercent({ CARDMARKET_FEE_PERCENT: '6,5' }), 6.5);
+  assert.equal(feePercent({ CARDMARKET_FEE_PERCENT: '0' }), 0);
+  assert.equal(feePercent({ CARDMARKET_FEE_PERCENT: 'abc' }), 5);
+  assert.equal(feePercent({ CARDMARKET_FEE_PERCENT: '150' }), 5);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kh-'));
+  assert.equal(readVersion(dir), null); // manuell installiert
+  fs.writeFileSync(path.join(dir, 'version.txt'), '﻿0123456789abcdef0123456789abcdef01234567\r\n2026-11-17T20:15:00Z\r\n');
+  assert.deepEqual(readVersion(dir), { sha: '0123456', date: '2026-11-17T20:15:00Z' });
+  fs.writeFileSync(path.join(dir, 'version.txt'), 'kaputt');
+  assert.equal(readVersion(dir), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Status meldet Gebühr und Version', async () => {
+  const db = freshDb();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kh-'));
+  fs.writeFileSync(path.join(dir, 'version.txt'), 'abcdef1234567\n2026-11-17T20:15:00Z\n');
+  await withServer(createApp({ db, env: { CARDMARKET_FEE_PERCENT: '4' }, root: dir }), async (base) => {
+    const s = await fetch(base + '/api/status').then((r) => r.json());
+    assert.equal(s.feePercent, 4);
+    assert.deepEqual(s.version, { sha: 'abcdef1', date: '2026-11-17T20:15:00Z' });
+    assert.equal(s.update, null);
+  });
+  await withServer(createApp({ db, root: dir, updateInfo: () => ({ available: true, date: '2026-11-18T09:00:00Z' }) }), async (base) => {
+    const s = await fetch(base + '/api/status').then((r) => r.json());
+    assert.deepEqual(s.update, { available: true, date: '2026-11-18T09:00:00Z' });
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Scryfall: Bilder und Gegenprobe, gedrosselt und zwischengespeichert
+// ---------------------------------------------------------------------------
+import { createScryfall, pickCard } from '../src/scryfall.js';
+
+const scryCard = {
+  set_name: 'Magic 2010', set: 'm10', collector_number: '146', rarity: 'common', lang: 'en',
+  border_color: 'black', frame_effects: ['showcase'],
+  image_uris: { small: 'https://cards.scryfall.io/small/bolt.jpg', normal: 'https://cards.scryfall.io/normal/bolt.jpg' },
+  prices: { eur: '2.41', eur_foil: null },
+  purchase_uris: { cardmarket: 'https://www.cardmarket.com/en/Magic/Products?idProduct=1&referrer=scryfall' },
+};
+
+function fakeFetch(map) {
+  const calls = [];
+  const fn = async (url) => {
+    calls.push(url);
+    const id = Number(url.split('/').pop());
+    const v = map[id];
+    if (v instanceof Error) throw v;
+    if (typeof v === 'number') return { ok: false, status: v, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => v };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('Scryfall-Daten: Bild, Sammlernummer, Preis, doppelseitige Karten', () => {
+  const p = pickCard(scryCard);
+  assert.equal(p.small, 'https://cards.scryfall.io/small/bolt.jpg');
+  assert.equal(p.set_code, 'M10');
+  assert.equal(p.eur, 2.41);
+  assert.equal(p.eur_foil, null);
+  assert.equal(p.frame, 'Showcase');
+  const dfc = pickCard({ card_faces: [{ image_uris: { small: 'vorne.jpg', normal: 'vorne-gross.jpg' } }, { image_uris: { small: 'hinten.jpg' } }] });
+  assert.equal(dfc.small, 'vorne.jpg');
+  assert.equal(pickCard(null).small, null);
+});
+
+test('Scryfall wird pro Karte nur einmal gefragt, Fehler werden nicht wiederholt', async () => {
+  const db = freshDb();
+  const f = fakeFetch({ 1: scryCard, 2: 404, 3: new Error('offline') });
+  const s = createScryfall(db, { fetchImpl: f, gapMs: 0 });
+  const [a, b] = await Promise.all([s.info(1), s.info(1)]); // gleichzeitig: eine Anfrage
+  assert.equal(a.status, 200);
+  assert.equal(b.small, scryCard.image_uris.small);
+  await s.info(1);
+  assert.equal(f.calls.length, 1); // aus dem Speicher
+  assert.equal((await s.info(2)).status, 404);
+  await s.info(2);
+  assert.equal(f.calls.length, 2); // unbekannte Karte wird nicht ständig neu gefragt
+  assert.equal((await s.info(3)).status, 0);
+  await s.info(3);
+  assert.equal(f.calls.length, 3); // nach einem Verbindungsfehler erst später wieder
+  // Preise dürfen höchstens 12 Stunden alt sein: dann wird neu gefragt
+  db.prepare("UPDATE scryfall SET fetched = '2000-01-01T00:00:00Z' WHERE id = 1").run();
+  await s.info(1, { maxAgeMs: 12 * 3600 * 1000 });
+  assert.equal(f.calls.length, 4);
+});
+
+test('Bilder: Weiterleitung auf Scryfall, im Demo-Modus Platzhalter', async () => {
+  const db = freshDb();
+  importPriceData(db, { catalog, priceGuide: guide('2026-11-01', 60, 2) });
+  const scryfall = createScryfall(db, { fetchImpl: fakeFetch({ 1: scryCard, 2: 404 }), gapMs: 0 });
+  await withServer(createApp({ db, env: {}, scryfall }), async (base) => {
+    const r = await fetch(base + '/img/1?v=normal', { redirect: 'manual' });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.get('location'), scryCard.image_uris.normal);
+    assert.equal((await fetch(base + '/img/1', { redirect: 'manual' })).headers.get('location'), scryCard.image_uris.small);
+    assert.equal((await fetch(base + '/img/2', { redirect: 'manual' })).status, 404);
+    const info = await fetch(base + '/api/card/1/scryfall').then((x) => x.json());
+    assert.equal(info.found, true);
+    assert.equal(info.eur, 2.41);
+    assert.equal(info.number, '146');
+  });
+  await withServer(createApp({ db, env: { DEMO: '1' }, scryfall }), async (base) => {
+    assert.equal((await fetch(base + '/img/1', { redirect: 'manual' })).status, 404);
+    assert.equal((await fetch(base + '/api/card/1/scryfall').then((x) => x.json())).found, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verlauf: auch günstige Karten, ausgedünnt, Trends nur aus vollständigem Verlauf
+// ---------------------------------------------------------------------------
+import { historyMin, thinHistory } from '../src/cardmarket.js';
+
+const cheapGuide = (day, cheap, trend = 0.08) => ({
+  version: 1,
+  createdAt: `${day}T02:00:00+0100`,
+  priceGuides: [
+    { idProduct: 1, avg: 2, low: 1.1, trend: 2, avg1: 2, avg7: 2, avg30: 2 },
+    { idProduct: 2, avg: 1, low: 0.5, trend: 1, avg1: 1, avg7: 1, avg30: 1 },
+    { idProduct: 3, avg: 60, low: 50, trend: 60, avg1: 60, avg7: 60, avg30: 60 },
+    // Preis-Trend unter 0,10 €, aber echte Verkäufe darüber: wird gespeichert
+    { idProduct: 4, avg: cheap, low: 0.02, trend, avg1: cheap, avg7: cheap, avg30: 0.1 },
+  ],
+});
+
+test('Verlauf ab 0,10 € (nach Verkaufswert), Untergrenze pro Tag gemerkt', () => {
+  assert.equal(historyMin({}), 0.1);
+  assert.equal(historyMin({ HISTORY_MIN_TREND: '0,3' }), 0.3);
+  assert.equal(historyMin({ HISTORY_MIN_TREND: '0' }), 0);
+  assert.equal(historyMin({ HISTORY_MIN_TREND: 'abc' }), 0.1);
+  const db = freshDb();
+  const r = importPriceData(db, { catalog, priceGuide: cheapGuide('2026-11-01', 0.12), day: '2026-11-01' });
+  assert.equal(r.history, 4);
+  assert.equal(db.prepare('SELECT floor FROM history_days WHERE day = ?').get('2026-11-01').floor, 0.1);
+  const r2 = importPriceData(db, { catalog, priceGuide: cheapGuide('2026-11-02', 0.05), day: '2026-11-02', historyMinTrend: 0.5 });
+  assert.equal(r2.history, 3);
+  assert.equal(db.prepare('SELECT floor FROM history_days WHERE day = ?').get('2026-11-02').floor, 0.5);
+});
+
+test('Trends nehmen den eigenen Verlauf nur, wenn er den Preisbereich ganz abdeckt', () => {
+  const db = freshDb();
+  for (let d = 1; d <= 9; d++) {
+    const day = `2026-11-${String(d).padStart(2, '0')}`;
+    importPriceData(db, { catalog, priceGuide: cheapGuide(day, 0.12 + d * 0.02, 0.1 + d * 0.02), day });
+  }
+  // alles ab 0,10 € gespeichert: Verlauf wird genutzt, die günstige Karte ist dabei
+  const all = topMovers(db, { direction: 'up', minPrice: 0.1, days: 7 });
+  assert.equal(all.source, 'history');
+  assert.deepEqual(all.rows.map((r) => r.id), [4]);
+  // Bereich unter der Speichergrenze: Vergleich aus der Preisliste, damit keine Karte fehlt
+  const tiny = topMovers(db, { direction: 'up', minPrice: 0.02, days: 7 });
+  assert.equal(tiny.source, 'guide');
+  assert.equal(tiny.reason, 'floor');
+  // Tage einer älteren Version (ohne Eintrag): galten ab 0,50 €
+  db.exec('DELETE FROM history_days');
+  assert.equal(topMovers(db, { minPrice: 0.1, days: 7 }).reason, 'floor');
+  assert.equal(topMovers(db, { minPrice: 1, days: 7 }).source, 'history');
+  // zu wenig Tage
+  const longer = topMovers(db, { minPrice: 1, days: 30 });
+  assert.equal(longer.source, 'guide');
+  assert.equal(longer.reason, 'days');
+});
+
+test('Alter Verlauf wird auf einen Tag pro Woche ausgedünnt, gemerkte Karten behalten alles', () => {
+  const db = freshDb();
+  const ins = db.prepare('INSERT INTO history (id, day, trend) VALUES (?, ?, ?)');
+  const day = (i) => new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+  for (let i = 0; i < 200; i++) for (const id of [1, 2]) ins.run(id, day(i), 1 + i / 100);
+  setWatched(db, 2, true);
+  const today = day(199);
+  const removed = thinHistory(db, today);
+  assert.ok(removed > 0);
+  const days1 = db.prepare('SELECT day FROM history WHERE id = 1 ORDER BY day').all().map((r) => r.day);
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - 100 * 86400000).toISOString().slice(0, 10);
+  const recent = days1.filter((d) => d >= cutoff);
+  const old = days1.filter((d) => d < cutoff);
+  assert.equal(recent.length, 101); // die letzten 100 Tage + heute: Tag für Tag
+  // ältere Tage: höchstens einer pro Woche (Montag bis Sonntag)
+  const weeks = old.map((d) => { const t = new Date(`${d}T00:00:00Z`); t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7)); return t.toISOString().slice(0, 10); });
+  assert.equal(new Set(weeks).size, weeks.length);
+  assert.ok(old.length >= 13 && old.length <= 16);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM history WHERE id = 2').get().n, 200); // gemerkt: alles
+  assert.equal(thinHistory(db, today), 0); // zweimal ausdünnen ändert nichts
 });

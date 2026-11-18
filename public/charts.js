@@ -32,8 +32,9 @@ export function sparkline(spark, { w = 96, h = 30 } = {}) {
  * Verteilung der Preisänderungen als Balken: links gefallen (rot), rechts gestiegen (grün),
  * um 0 % grau. buckets = [{ from, to, count }]
  */
-export function histogramSvg(buckets, { h = 220 } = {}) {
-  const W = 600, H = h, m = { l: 8, r: 8, t: 10, b: 30 };
+export function histogramSvg(buckets, { w = 600, h = 220 } = {}) {
+  // Breite = echte Breite des Platzes, damit die Schrift auf dem Handy nicht winzig wird
+  const W = Math.max(260, Math.round(w)), H = h, m = { l: 8, r: 8, t: 10, b: 30 };
   const max = Math.max(1, ...buckets.map((b) => b.count));
   const bw = (W - m.l - m.r) / buckets.length;
   const y = (c) => m.t + (1 - c / max) * (H - m.t - m.b);
@@ -47,18 +48,24 @@ export function histogramSvg(buckets, { h = 220 } = {}) {
       <rect class="hit" x="${x - 1}" y="${m.t}" width="${bw}" height="${H - m.t - m.b}" fill="transparent"/>
       <rect class="bar ${cls}" x="${x}" y="${top}" width="${Math.max(1, bw - 2)}" height="${Math.max(0, H - m.b - top)}" rx="3"/></g>`;
   }).join('');
-  const ticks = [-0.5, -0.25, 0, 0.25, 0.5].map((t) => {
+  const ticks = (W < 420 ? [-0.5, 0, 0.5] : [-0.5, -0.25, 0, 0.25, 0.5]).map((t) => {
     const x = m.l + ((t + 0.5) / 1) * (W - m.l - m.r);
     const anchor = t === -0.5 ? 'start' : t === 0.5 ? 'end' : 'middle';
-    return `<text x="${x}" y="${H - 8}" text-anchor="${anchor}">${t > 0 ? '+' : ''}${Math.round(t * 100)} %</text>`;
+    return `<text x="${x}" y="${H - 8}" text-anchor="${anchor}">${t > 0 ? '+' : t < 0 ? '−' : ''}${Math.abs(Math.round(t * 100))} %</text>`;
   }).join('');
   return `<svg class="hist" viewBox="0 0 ${W} ${H}" role="img" aria-label="Verteilung der Preisänderungen">
     <line class="baseline" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>
     ${bars}<g class="axis">${ticks}</g></svg>`;
 }
 
+/** Dieselben Zahlen wie im Balkendiagramm, als Tabelle (zum Nachlesen ohne Maus). */
+export function histogramTable(buckets) {
+  const rows = buckets.map((b, i) => `<tr><td>${pctRange(b, i, buckets.length)}</td><td class="num">${b.count.toLocaleString('de-DE')}</td></tr>`).join('');
+  return `<table><thead><tr><th>Veränderung</th><th class="num">Karten</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function pctRange(b, i, n) {
-  const f = (v) => `${v > 0 ? '+' : ''}${Math.round(v * 100)} %`;
+  const f = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(Math.round(v * 100))} %`;
   if (i === 0) return `${f(b.to)} und weniger`;
   if (i === n - 1) return `${f(b.from)} und mehr`;
   return `${f(b.from)} bis ${f(b.to)}`;

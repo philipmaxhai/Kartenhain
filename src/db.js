@@ -36,6 +36,12 @@ export function openDb(file) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS idx_history_day ON history(day);
 
+    -- Pro Verlaufstag: ab welchem Preis an diesem Tag alle Karten gespeichert wurden
+    CREATE TABLE IF NOT EXISTS history_days (
+      day TEXT PRIMARY KEY,
+      floor REAL NOT NULL
+    );
+
     -- Editionsnamen (Cardmarket-Editions-ID -> Name), aus MTGJSON
     CREATE TABLE IF NOT EXISTS expansions (
       id INTEGER PRIMARY KEY,
@@ -50,6 +56,16 @@ export function openDb(file) {
     );
 
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
+    -- Zwischenspeicher für Scryfall (Kartenbild, Sammlernummer, Gegenprobe des Preises)
+    CREATE TABLE IF NOT EXISTS scryfall (
+      id INTEGER PRIMARY KEY,           -- Cardmarket idProduct
+      fetched TEXT NOT NULL,
+      status INTEGER NOT NULL,          -- 200 gefunden, 404 unbekannt
+      small TEXT, normal TEXT,
+      set_name TEXT, set_code TEXT, number TEXT, rarity TEXT,
+      eur REAL, eur_foil REAL, cm_url TEXT, frame TEXT
+    );
   `);
   // Spalten, die in späteren Versionen dazugekommen sind (bestehende Datenbanken nachrüsten)
   addColumns(db, 'watchlist', {
@@ -59,6 +75,16 @@ export function openDb(file) {
     alert_above: 'REAL',
     foil: 'INTEGER NOT NULL DEFAULT 0',
   });
+  // Verkaufswert (Ø 7 Tage) im Verlauf, damit Graphen und "Meine Karten" denselben Wert zeigen
+  addColumns(db, 'history', { avg7: 'REAL', avg7_foil: 'REAL' });
+  // Cardmarket schreibt 0 für fehlende Werte (z. B. keine Foil-Version, keine Verkäufe).
+  // Ältere Versionen haben diese Nullen übernommen: einmalig in "kein Wert" umwandeln.
+  if (getMeta(db, 'zeroIsMissing') !== '1') {
+    const cols = ['avg', 'low', 'trend', 'avg1', 'avg7', 'avg30', 'avg_foil', 'low_foil', 'trend_foil', 'avg1_foil', 'avg7_foil', 'avg30_foil'];
+    db.exec(`UPDATE prices SET ${cols.map((c) => `${c} = NULLIF(${c}, 0)`).join(', ')}`);
+    db.exec('UPDATE history SET trend = NULLIF(trend, 0), low = NULLIF(low, 0), avg1 = NULLIF(avg1, 0), trend_foil = NULLIF(trend_foil, 0)');
+    setMeta(db, 'zeroIsMissing', '1');
+  }
   return db;
 }
 
